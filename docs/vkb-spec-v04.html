@@ -920,7 +920,7 @@ re-ingest, re-chunk, and explicit raw fetch requests.</div>
       <tr><td class="cfg-key">OLLAMA_BASE_URL</td><td class="cfg-def">http://localhost:11434</td><td class="cfg-desc">Ollama HTTP base URL</td></tr>
       <tr><td class="cfg-key">EMBED_MODEL</td><td class="cfg-def">nomic-embed-text</td><td class="cfg-desc">Ollama model tag for embeddings. Changing this triggers re-embed on next retune.</td></tr>
       <tr><td class="cfg-key">EMBED_DIM</td><td class="cfg-def">768</td><td class="cfg-desc">Must match model output dimension. Validated against config_state on startup.</td></tr>
-      <tr><td class="cfg-key">LLM_MODEL</td><td class="cfg-def">llama3.2</td><td class="cfg-desc">Ollama chat model for summarisation and relation extraction</td></tr>
+      <tr><td class="cfg-key">LLM_MODEL</td><td class="cfg-def">gemma4:e4b</td><td class="cfg-desc">Ollama chat model for summarisation and relation extraction</td></tr>
 
       <tr class="cfg-group"><td colspan="3">Chunking</td></tr>
       <tr><td class="cfg-key">CHUNK_SIZE</td><td class="cfg-def">512</td><td class="cfg-desc">Token window size for sliding window chunker. Changing triggers re-chunk on next retune.</td></tr>

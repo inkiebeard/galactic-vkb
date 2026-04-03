@@ -16,7 +16,7 @@ Pull the models vkb uses by default:
 
 ```bash
 ollama pull nomic-embed-text
-ollama pull llama3.2
+ollama pull gemma4:e4b
 ```
 
 ---
@@ -67,7 +67,7 @@ Open (or create) `~/.claude/claude_desktop_config.json` and add an entry under `
         "DATABASE_URL": "postgres://vkb:vkb@localhost:5433/vkb",
         "OLLAMA_BASE_URL": "http://localhost:11434",
         "EMBED_MODEL": "nomic-embed-text",
-        "LLM_MODEL": "llama3.2",
+        "LLM_MODEL": "gemma4:e4b",
         "MCP_PORT": "0"
       }
     }
@@ -321,7 +321,7 @@ All settings are read from environment variables (or a `.env` file). Defaults ar
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL |
 | `EMBED_MODEL` | `nomic-embed-text` | Embedding model |
 | `EMBED_DIM` | `768` | Embedding dimension (must match model output) |
-| `LLM_MODEL` | `llama3.2` | LLM model for relation extraction and summarisation |
+| `LLM_MODEL` | `gemma4:e4b` | LLM model for relation extraction and summarisation |
 | `LLM_RELATION_EXTRACTION` | `true` | Use LLM to extract relations (set `false` to use heuristics only) |
 | `LLM_EXTRACT_CANDIDATES` | `20` | Candidate chunks the LLM considers per extraction pass |
 

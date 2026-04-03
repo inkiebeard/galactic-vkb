@@ -10,7 +10,7 @@ export const config = {
   OLLAMA_BASE_URL: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
   EMBED_MODEL:     process.env.EMBED_MODEL     ?? 'nomic-embed-text',
   EMBED_DIM:       parseInt(process.env.EMBED_DIM ?? '768', 10),
-  LLM_MODEL:       process.env.LLM_MODEL       ?? 'llama3.2',
+  LLM_MODEL:       process.env.LLM_MODEL       ?? 'gemma4:e4b',
 
   // ── Chunking ─────────────────────────────────────────────────────────────
   CHUNK_SIZE:    parseInt(process.env.CHUNK_SIZE    ?? '512', 10),

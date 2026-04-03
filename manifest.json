@@ -111,9 +111,9 @@
     "llm_model": {
       "type": "string",
       "title": "LLM Model",
-      "description": "Ollama model used for chunk/section summarisation and relation extraction (e.g. llama3.2, mistral).",
+      "description": "Ollama model used for chunk/section summarisation and relation extraction (e.g. gemma4:e4b, mistral).",
       "required": true,
-      "default": "llama3.2"
+      "default": "gemma4:e4b"
     },
     "rawstore_path": {
       "type": "directory",
