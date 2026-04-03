@@ -42,6 +42,14 @@ export const config = {
   RETUNE_SUMMARISE:      process.env.RETUNE_SUMMARISE === 'true',
   JOB_TTL_DAYS:          parseInt(process.env.JOB_TTL_DAYS          ?? '7', 10),
 
+  // ── Summarisation ────────────────────────────────────────────────────────
+  // Max parallel LLM calls during chunk summarisation. Higher = faster but
+  // hits the Ollama queue harder. 1 = fully serial (old behaviour).
+  SUMMARY_CONCURRENCY:      parseInt(process.env.SUMMARY_CONCURRENCY      ?? '4',     10),
+  // Max characters fed into the entity-level summary prompt. Prevents context
+  // window overflow on large docs (epub, long PDFs). ~12 000 chars ≈ 3 000 tokens.
+  SUMMARY_MAX_INPUT_CHARS:  parseInt(process.env.SUMMARY_MAX_INPUT_CHARS  ?? '12000', 10),
+
   // ── Prompts ──────────────────────────────────────────────────────────────
   SUMMARY_PROMPT_FILE:         process.env.SUMMARY_PROMPT_FILE          as string | undefined,
   CHUNK_SUMMARY_PROMPT_FILE:   process.env.CHUNK_SUMMARY_PROMPT_FILE    as string | undefined,

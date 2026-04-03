@@ -13,6 +13,28 @@ const log = createLogger('ingest');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/**
+ * Run `fn` over every item in `items` with at most `concurrency` promises in
+ * flight simultaneously. Uses a shared cursor so each item is processed exactly
+ * once regardless of how fast individual calls resolve.
+ */
+async function pConcurrent<T>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const i = cursor++;
+      await fn(items[i], i);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(Math.max(concurrency, 1), items.length) }, worker),
+  );
+}
+
 function emit(msg: object) {
   if (process.send) process.send(msg);
 }
@@ -118,109 +140,171 @@ export async function runIngestPipeline(
 
     // ════════════════════════════════════════════════════════════════════════
     // PHASE 2 — DERIVE
-    // All steps are deterministic and cheap. Clear any stale artifacts from a
-    // previous failed attempt first so every run is fully idempotent.
+    // All steps are deterministic and cheap. When section_summaries already
+    // exist for this entity it means Phase 2 fully completed on a prior
+    // attempt; skip straight to Phase 3 by reloading derived state from the
+    // DB and rawstore ndjson instead of re-chunking and re-embedding.
     // ════════════════════════════════════════════════════════════════════════
-    await setStage(db, jobId, 'chunking');
 
-    // Step 5 — Clear stale derived artifacts before regenerating
-    await db.query(`DELETE FROM section_summary WHERE entity_id = $1`, [entityId]);
-    await db.query(
-      `DELETE FROM relation WHERE (source_id = $1 OR target_id = $1) AND source_kind = 'entity'`,
+    // Shared state: populated fresh by Phase 2, or reloaded on Phase 2 skip.
+    let rawChunks: Array<{ seq: number; text: string }> = [];
+    let chunkIds:  string[] = [];
+    let sections:  Array<{ seq: number; chunk_ids: string[] }> = [];
+    let sectionIds: string[] = [];
+
+    // Presence of section_summaries is the completion marker for Phase 2.
+    const { rows: priorSections } = await db.query<{
+      id: string; seq: number; chunk_ids: string[];
+    }>(
+      'SELECT id, seq, chunk_ids FROM section_summary WHERE entity_id = $1 ORDER BY seq',
       [entityId],
     );
-    await db.query(`DELETE FROM chunk WHERE entity_id = $1`, [entityId]);
-    await adapters.rawstore.delete(chunksFilePath(entityId)).catch(() => { /* absent is fine */ });
 
-    // Step 6 — Chunk
-    const rawChunks = adapters.chunk.chunk(rawText, { size: config.CHUNK_SIZE, overlap: config.CHUNK_OVERLAP });
-    await patchProgress(db, jobId, { chunks_total: rawChunks.length });
-
-    const chunkIds: string[] = rawChunks.map(() => uuid());
-    const ndjsonLines = rawChunks.map((c, i) =>
-      JSON.stringify({ chunk_id: chunkIds[i], entity_id: entityId, seq: c.seq, text: c.text }),
-    );
-    const chunksKey = chunksFilePath(entityId);
-    await adapters.rawstore.write(chunksKey, ndjsonLines.join('\n'));
-
-    for (let i = 0; i < rawChunks.length; i++) {
-      await db.query(
-        `INSERT INTO chunk (id, entity_id, seq, raw_store_key) VALUES ($1, $2, $3, $4)`,
-        [chunkIds[i], entityId, rawChunks[i].seq, `${chunksKey}#${i}`],
+    if (priorSections.length > 0) {
+      // ── Phase 2 already complete — reload state, skip straight to Phase 3 ──
+      log.info(
+        `Job ${jobId}: Phase 2 already complete (${priorSections.length} sections) — ` +
+        `resuming at Phase 3`,
       );
-    }
+      const ndjson = await adapters.rawstore.read(chunksFilePath(entityId));
+      const chunkData = ndjson.split('\n').filter(Boolean)
+        .map(l => JSON.parse(l) as { chunk_id: string; seq: number; text: string });
+      rawChunks  = chunkData.map(c => ({ seq: c.seq, text: c.text }));
+      chunkIds   = chunkData.map(c => c.chunk_id);
+      sections   = priorSections.map(s => ({ seq: s.seq, chunk_ids: s.chunk_ids }));
+      sectionIds = priorSections.map(s => s.id);
+    } else {
+      // ── Phase 2: wipe stale artifacts and re-derive from raw text ──────────
+      await setStage(db, jobId, 'chunking');
 
-    // Sequential chunk→chunk relations
-    for (let i = 1; i < chunkIds.length; i++) {
+      // Step 5 — Clear stale derived artifacts before regenerating
+      await db.query(`DELETE FROM section_summary WHERE entity_id = $1`, [entityId]);
       await db.query(
-        `INSERT INTO relation (id, source_id, target_id, source_kind, target_kind, rel_type, origin, weight, confidence)
-         VALUES ($1,$2,$3,'chunk','chunk','sequential','content_heuristic',1.0,1.0)
-         ON CONFLICT (source_id, target_id, rel_type) DO NOTHING`,
-        [uuid(), chunkIds[i - 1], chunkIds[i]],
+        `DELETE FROM relation WHERE (source_id = $1 OR target_id = $1) AND source_kind = 'entity'`,
+        [entityId],
       );
-    }
+      await db.query(`DELETE FROM chunk WHERE entity_id = $1`, [entityId]);
+      await adapters.rawstore.delete(chunksFilePath(entityId)).catch(() => { /* absent is fine */ });
 
-    // Step 7 — Embed
-    await setStage(db, jobId, 'embedding');
+      // Step 6 — Chunk
+      const freshChunks = adapters.chunk.chunk(rawText, { size: config.CHUNK_SIZE, overlap: config.CHUNK_OVERLAP });
+      await patchProgress(db, jobId, { chunks_total: freshChunks.length });
 
-    const chunkTexts = rawChunks.map(c => c.text);
-    const embeddings = await adapters.embed.embed(chunkTexts);
-
-    for (let i = 0; i < chunkIds.length; i++) {
-      await db.query(
-        `UPDATE chunk SET embedding = $1::vector, embed_model = $2, embed_version = 1, embedded_at = NOW()
-         WHERE id = $3`,
-        [serializeVector(embeddings[i]), config.EMBED_MODEL, chunkIds[i]],
+      const freshChunkIds: string[] = freshChunks.map(() => uuid());
+      const ndjsonLines = freshChunks.map((c, i) =>
+        JSON.stringify({ chunk_id: freshChunkIds[i], entity_id: entityId, seq: c.seq, text: c.text }),
       );
-      await patchProgress(db, jobId, { chunks_done: i + 1 });
+      const chunksKey = chunksFilePath(entityId);
+      await adapters.rawstore.write(chunksKey, ndjsonLines.join('\n'));
+
+      for (let i = 0; i < freshChunks.length; i++) {
+        await db.query(
+          `INSERT INTO chunk (id, entity_id, seq, raw_store_key) VALUES ($1, $2, $3, $4)`,
+          [freshChunkIds[i], entityId, freshChunks[i].seq, `${chunksKey}#${i}`],
+        );
+      }
+
+      // Sequential chunk→chunk relations
+      for (let i = 1; i < freshChunkIds.length; i++) {
+        await db.query(
+          `INSERT INTO relation (id, source_id, target_id, source_kind, target_kind, rel_type, origin, weight, confidence)
+           VALUES ($1,$2,$3,'chunk','chunk','sequential','content_heuristic',1.0,1.0)
+           ON CONFLICT (source_id, target_id, rel_type) DO NOTHING`,
+          [uuid(), freshChunkIds[i - 1], freshChunkIds[i]],
+        );
+      }
+
+      // Step 7 — Embed
+      await setStage(db, jobId, 'embedding');
+
+      const chunkTexts = freshChunks.map(c => c.text);
+      const embeddings = await adapters.embed.embed(chunkTexts);
+
+      for (let i = 0; i < freshChunkIds.length; i++) {
+        await db.query(
+          `UPDATE chunk SET embedding = $1::vector, embed_model = $2, embed_version = 1, embedded_at = NOW()
+           WHERE id = $3`,
+          [serializeVector(embeddings[i]), config.EMBED_MODEL, freshChunkIds[i]],
+        );
+        await patchProgress(db, jobId, { chunks_done: i + 1 });
+      }
+
+      // Signal if ivfflat index is now warranted
+      const { rows: countRows } = await db.query<{ cnt: string }>('SELECT COUNT(*) AS cnt FROM chunk');
+      if (parseInt(countRows[0].cnt, 10) > config.IVFFLAT_THRESHOLD) {
+        emit({ type: 'progress', job_id: jobId, payload: { needs_ivfflat: true } });
+      }
+
+      // Step 8 — Section
+      await setStage(db, jobId, 'sectioning');
+
+      const orderedChunks = freshChunkIds.map((id, i) => ({
+        id,
+        seq:       freshChunks[i].seq,
+        text:      freshChunks[i].text,
+        embedding: embeddings[i],
+      }));
+
+      const freshSections: Section[] = adapters.section.section(orderedChunks, {
+        threshold:  config.SECTION_SPLIT_THRESHOLD,
+        windowSize: config.SECTION_WINDOW_SIZE,
+        maxSize:    config.SECTION_MAX_SIZE,
+      });
+
+      const freshSectionIds: string[] = [];
+      for (const sec of freshSections) {
+        const sid = uuid();
+        freshSectionIds.push(sid);
+        await db.query(
+          `INSERT INTO section_summary (id, entity_id, chunk_ids, seq, summary, strategy)
+           VALUES ($1,$2,$3,$4,'',$5)`,
+          [sid, entityId, sec.chunk_ids, sec.seq, config.SECTION_STRATEGY],
+        );
+      }
+      await patchProgress(db, jobId, { sections_done: freshSections.length });
+
+      rawChunks  = freshChunks.map(c => ({ seq: c.seq, text: c.text }));
+      chunkIds   = freshChunkIds;
+      sections   = freshSections.map(s => ({ seq: s.seq, chunk_ids: s.chunk_ids }));
+      sectionIds = freshSectionIds;
     }
-
-    // Signal if ivfflat index is now warranted
-    const { rows: countRows } = await db.query<{ cnt: string }>('SELECT COUNT(*) AS cnt FROM chunk');
-    if (parseInt(countRows[0].cnt, 10) > config.IVFFLAT_THRESHOLD) {
-      emit({ type: 'progress', job_id: jobId, payload: { needs_ivfflat: true } });
-    }
-
-    // Step 8 — Section
-    await setStage(db, jobId, 'sectioning');
-
-    const orderedChunks = chunkIds.map((id, i) => ({
-      id,
-      seq:       rawChunks[i].seq,
-      text:      rawChunks[i].text,
-      embedding: embeddings[i],
-    }));
-
-    const sections: Section[] = adapters.section.section(orderedChunks, {
-      threshold:  config.SECTION_SPLIT_THRESHOLD,
-      windowSize: config.SECTION_WINDOW_SIZE,
-      maxSize:    config.SECTION_MAX_SIZE,
-    });
-
-    const sectionIds: string[] = [];
-    for (const sec of sections) {
-      const sid = uuid();
-      sectionIds.push(sid);
-      await db.query(
-        `INSERT INTO section_summary (id, entity_id, chunk_ids, seq, summary, strategy)
-         VALUES ($1,$2,$3,$4,'',$5)`,
-        [sid, entityId, sec.chunk_ids, sec.seq, config.SECTION_STRATEGY],
-      );
-    }
-    await patchProgress(db, jobId, { sections_done: sections.length });
 
     // ════════════════════════════════════════════════════════════════════════
     // PHASE 3 — INTELLIGENCE
-    // LLM-heavy work. Failures here leave raw + chunks intact so a retry can
-    // resume from Phase 2 cleanup without re-fetching or re-chunking.
+    // On a fresh run this follows Phase 2 directly. On retry, Phase 2 is
+    // skipped (sections already exist) and we resume here. Individual chunks
+    // and sections that were already summarised before the crash are also
+    // skipped, so only the work that didn't survive is re-done.
     // ════════════════════════════════════════════════════════════════════════
     await setStage(db, jobId, 'summarising');
 
-    // Step 9 — Summarise: L1 chunk → L2 section → L3 entity
-    for (let i = 0; i < rawChunks.length; i++) {
-      const summary = await adapters.llm.complete(prompts.chunkSummary, rawChunks[i].text);
+    // Pre-load any summaries written in a prior attempt so we can skip them.
+    const { rows: existingChunkSums } = await db.query<{ id: string; summary: string | null }>(
+      'SELECT id, summary FROM chunk WHERE entity_id = $1',
+      [entityId],
+    );
+    const existingChunkSumMap = new Map(existingChunkSums.map(r => [r.id, r.summary ?? null]));
+
+    // Step 9 — Summarise: L1 chunk (parallel) → L2 section → L3 entity
+    //
+    // Chunk summaries are the dominant cost for large documents. We run up to
+    // SUMMARY_CONCURRENCY calls in parallel so an epub with 300+ chunks doesn't
+    // stall the worker for tens of minutes on a single Ollama thread.
+    // Chunks that already have summaries from a prior attempt are skipped.
+    let summarisedCount = 0;
+    await pConcurrent(rawChunks, config.SUMMARY_CONCURRENCY, async (chunk, i) => {
+      if (existingChunkSumMap.get(chunkIds[i])) {
+        summarisedCount++;
+        return; // Already summarised in a prior attempt
+      }
+      const summary = await adapters.llm.complete(prompts.chunkSummary, chunk.text);
       await db.query('UPDATE chunk SET summary = $1 WHERE id = $2', [summary.trim(), chunkIds[i]]);
-    }
+      summarisedCount++;
+      // Throttle progress writes: update every 5 chunks or on the final one
+      if (summarisedCount % 5 === 0 || summarisedCount === rawChunks.length) {
+        await patchProgress(db, jobId, { chunks_done: summarisedCount });
+      }
+    });
 
     const { rows: chunkSumRows } = await db.query<{ id: string; summary: string }>(
       'SELECT id, summary FROM chunk WHERE entity_id = $1 ORDER BY seq',
@@ -228,7 +312,15 @@ export async function runIngestPipeline(
     );
     const chunkSumMap = new Map(chunkSumRows.map(r => [r.id, r.summary ?? '']));
 
+    // Pre-load existing section summaries to skip already-done sections on retry.
+    const { rows: existingSecSums } = await db.query<{ id: string; summary: string }>(
+      'SELECT id, summary FROM section_summary WHERE entity_id = $1',
+      [entityId],
+    );
+    const existingSecSumMap = new Map(existingSecSums.map(r => [r.id, r.summary]));
+
     for (let i = 0; i < sections.length; i++) {
+      if (existingSecSumMap.get(sectionIds[i])) continue; // Already done in a prior attempt
       const sectionText = sections[i].chunk_ids.map(cid => chunkSumMap.get(cid) ?? '').join('\n\n');
       const secSummary = await adapters.llm.complete(prompts.sectionSummary, sectionText);
       await db.query('UPDATE section_summary SET summary = $1 WHERE id = $2', [secSummary.trim(), sectionIds[i]]);
@@ -238,10 +330,21 @@ export async function runIngestPipeline(
       'SELECT summary FROM section_summary WHERE entity_id = $1 ORDER BY seq',
       [entityId],
     );
-    const entitySummary = await adapters.llm.complete(
-      prompts.entitySummary,
-      secSumRows.map(r => r.summary).join('\n\n'),
-    );
+
+    // Build the entity-summary input from section summaries, capped at
+    // SUMMARY_MAX_INPUT_CHARS to avoid overflowing model context windows.
+    // For very long documents (books, epubs) this means the tail is omitted;
+    // the summary will still capture the opening and structure of the work.
+    let entitySummaryInput = secSumRows.map(r => r.summary).join('\n\n');
+    if (entitySummaryInput.length > config.SUMMARY_MAX_INPUT_CHARS) {
+      log.warn(
+        `Entity ${entityId}: summary input truncated from ${entitySummaryInput.length} ` +
+        `to ${config.SUMMARY_MAX_INPUT_CHARS} chars (SUMMARY_MAX_INPUT_CHARS)`,
+      );
+      entitySummaryInput = entitySummaryInput.slice(0, config.SUMMARY_MAX_INPUT_CHARS);
+    }
+
+    const entitySummary = await adapters.llm.complete(prompts.entitySummary, entitySummaryInput);
     await db.query(
       `UPDATE entity SET summary = $1, summary_version = summary_version + 1, updated_at = NOW() WHERE id = $2`,
       [entitySummary.trim(), entityId],
