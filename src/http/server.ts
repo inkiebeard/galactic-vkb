@@ -4,6 +4,7 @@ import { createServer as createHttpsServer } from 'https';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
+import { IncomingMessage } from 'http';
 import { config } from '../config.js';
 import { getPool, isDbConnectionError } from '../db/client.js';
 import type { Adapters } from '../adapters/registry.js';
@@ -60,7 +61,19 @@ export function startObsServer(adapters: Adapters): void {
   // Express 5 types params as string | string[]; route params are always single strings
   const param = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
 
-  wss.on('connection', ws => {
+  wss.on('connection', (ws, req: IncomingMessage) => {
+    // Validate auth token on WebSocket upgrade when OBS_SECRET is set.
+    // Browsers cannot send custom HTTP headers during WS upgrade, so the token
+    // is accepted as a query-string parameter: /stream?token=<secret>
+    if (config.OBS_SECRET) {
+      const url    = new URL(req.url ?? '', `http://${req.headers.host ?? 'localhost'}`);
+      const token  = url.searchParams.get('token') ?? '';
+      const bearer = (req.headers.authorization ?? '').replace(/^Bearer\s+/i, '');
+      if (token !== config.OBS_SECRET && bearer !== config.OBS_SECRET) {
+        ws.close(1008, 'Unauthorized');
+        return;
+      }
+    }
     clients.add(ws);
     ws.on('close', () => clients.delete(ws));
     ws.on('error', () => clients.delete(ws));

@@ -55,6 +55,7 @@ export const config = {
   MCP_PORT:   parseInt(process.env.MCP_PORT   ?? '3333', 10),
   OBS_PORT:   parseInt(process.env.OBS_PORT   ?? '4242', 10),
   OBS_SECRET: process.env.OBS_SECRET as string | undefined,
+  MCP_SECRET: process.env.MCP_SECRET as string | undefined,
 
   // ── TLS (optional — set both to enable HTTPS on all servers) ─────────────
   TLS_CERT: process.env.TLS_CERT as string | undefined,

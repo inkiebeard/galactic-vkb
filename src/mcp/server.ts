@@ -6,6 +6,7 @@ import { createServer as createHttpsServer } from 'https';
 import express from 'express';
 import { loadTls } from '../tls.js';
 import { z } from 'zod';
+import { config } from '../config.js';
 import type { Adapters } from '../adapters/registry.js';
 import {
   handleIngest, handleJob, handleQuery, handleGet, handleRaw,
@@ -127,6 +128,19 @@ export async function startMcpStdio(adapters: Adapters): Promise<void> {
 export async function startMcpHttp(adapters: Adapters, port: number): Promise<void> {
   const app = express();
   app.use(express.json());
+
+  // ── Optional Bearer-token auth ─────────────────────────────────────────
+  // Set MCP_SECRET to require a token on all /mcp requests. When unset,
+  // access is unrestricted (suitable for localhost-only deployments).
+  app.use('/mcp', (req, res, next) => {
+    if (!config.MCP_SECRET) return next();
+    const auth = req.headers.authorization ?? '';
+    if (!auth.startsWith('Bearer ') || auth.slice(7) !== config.MCP_SECRET) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    next();
+  });
 
   const sessions = new Map<string, StreamableHTTPServerTransport>();
 
