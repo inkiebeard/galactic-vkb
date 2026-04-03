@@ -26,6 +26,60 @@ controls.dampingFactor = 0.07;
 controls.minDistance   = 50;
 controls.maxDistance   = 2000;
 
+// ── Auto-orbit ────────────────────────────────────────────────────────────────
+const orbit = {
+  active:      true,   // whether auto-orbit is currently running
+  resumeDelay: 3000,   // ms of inactivity before resuming
+  speed:       0.000028, // radians per ms
+  _timer:      null,
+  _baseAngle:  null,   // angle captured when orbit last resumed
+  _baseTime:   null,   // timestamp when orbit last resumed
+  _center:     new THREE.Vector3(), // centroid of current graph
+};
+
+function orbitInterrupt() {
+  if (orbit.active) {
+    orbit.active = false;
+    // Let OrbitControls take full control while user is interacting
+    controls.autoRotate = false;
+  }
+  clearTimeout(orbit._timer);
+  orbit._timer = setTimeout(() => {
+    // Snapshot current azimuth so orbit resumes seamlessly from here
+    const dx = camera.position.x - orbit._center.x;
+    const dz = camera.position.z - orbit._center.z;
+    orbit._baseAngle = Math.atan2(dx, dz);
+    orbit._baseTime  = performance.now();
+    orbit.active = true;
+  }, orbit.resumeDelay);
+}
+
+function tickOrbit(t) {
+  if (!orbit.active) return;
+  if (orbit._baseAngle === null) {
+    // First tick — initialise from current camera position
+    const dx = camera.position.x - orbit._center.x;
+    const dz = camera.position.z - orbit._center.z;
+    orbit._baseAngle = Math.atan2(dx, dz);
+    orbit._baseTime  = t;
+  }
+  const elapsed = t - orbit._baseTime;
+  const angle   = orbit._baseAngle + elapsed * orbit.speed;
+  const radius  = camera.position.distanceTo(orbit._center);
+  // Keep current Y (elevation), orbit in XZ plane around center
+  const cy = camera.position.y - orbit._center.y;
+  const flatR = Math.sqrt(Math.max(0, radius * radius - cy * cy));
+  camera.position.x = orbit._center.x + flatR * Math.sin(angle);
+  camera.position.z = orbit._center.z + flatR * Math.cos(angle);
+  camera.lookAt(orbit._center);
+  controls.target.copy(orbit._center);
+}
+
+// Pause on any user pointer/touch/wheel/key activity
+['pointerdown','pointermove','wheel','keydown','touchstart'].forEach(ev => {
+  window.addEventListener(ev, orbitInterrupt, { passive: true });
+});
+
 scene.add(new THREE.AmbientLight(0xffffff, 0.55));
 const sun = new THREE.DirectionalLight(0xffffff, 1.0);
 sun.position.set(200, 300, 200);
@@ -39,7 +93,90 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 
-renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+renderer.setAnimationLoop((t) => {
+  tickOrbit(t);
+  controls.update();
+  tickStarscape(t);
+  renderer.render(scene, camera);
+});
+
+// ── Starscape ─────────────────────────────────────────────────────────────────
+// Two layers: a dense field of tiny static stars + a sparse layer of slow motes.
+(function buildStarscape() {
+  // --- star field: 2400 tiny points scattered in a large shell ---
+  const starCount  = 2400;
+  const starPos    = new Float32Array(starCount * 3);
+  const starColors = new Float32Array(starCount * 3);
+  const rng = (() => { let s = 0xbeef1234; return () => { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return (s >>> 0) / 0x100000000; }; })();
+  for (let i = 0; i < starCount; i++) {
+    // Uniform distribution on sphere shell between r=800 and r=1600
+    const r     = 800 + rng() * 800;
+    const theta = Math.acos(2 * rng() - 1);
+    const phi   = rng() * Math.PI * 2;
+    starPos[i*3]   = r * Math.sin(theta) * Math.cos(phi);
+    starPos[i*3+1] = r * Math.sin(theta) * Math.sin(phi);
+    starPos[i*3+2] = r * Math.cos(theta);
+    // Warm-to-cool palette: mostly grey-white, occasional blue/amber tint
+    const lum = 0.18 + rng() * 0.35;
+    const tint = rng();
+    starColors[i*3]   = lum + (tint < 0.15 ? 0.08 : tint > 0.85 ? -0.04 : 0);
+    starColors[i*3+1] = lum + (tint < 0.15 ? 0.02 : 0);
+    starColors[i*3+2] = lum + (tint < 0.15 ? -0.04 : tint > 0.85 ? 0.12 : 0);
+  }
+  const starGeo = new THREE.BufferGeometry();
+  starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+  starGeo.setAttribute('color',    new THREE.BufferAttribute(starColors, 3));
+  const starMat = new THREE.PointsMaterial({ size: 0.9, vertexColors: true, transparent: true, opacity: 0.55, sizeAttenuation: true });
+  const stars = new THREE.Points(starGeo, starMat);
+  scene.add(stars);
+
+  // --- mote layer: 120 larger, slower drifting points ---
+  const moteCount = 120;
+  const motePos   = new Float32Array(moteCount * 3);
+  const motePhase = new Float32Array(moteCount * 3); // orbit params per mote
+  for (let i = 0; i < moteCount; i++) {
+    const r     = 300 + rng() * 700;
+    const theta = Math.acos(2 * rng() - 1);
+    const phi   = rng() * Math.PI * 2;
+    motePos[i*3]   = r * Math.sin(theta) * Math.cos(phi);
+    motePos[i*3+1] = r * Math.sin(theta) * Math.sin(phi);
+    motePos[i*3+2] = r * Math.cos(theta);
+    motePhase[i*3]   = rng() * Math.PI * 2; // phase offset
+    motePhase[i*3+1] = (rng() - 0.5) * 0.00018; // orbit speed (rad/ms)
+    motePhase[i*3+2] = r;                   // orbital radius
+  }
+  const moteGeo = new THREE.BufferGeometry();
+  moteGeo.setAttribute('position', new THREE.BufferAttribute(motePos, 3));
+  const moteMat = new THREE.PointsMaterial({ size: 2.4, color: 0x3a7a6a, transparent: true, opacity: 0.28, sizeAttenuation: true });
+  const motes  = new THREE.Points(moteGeo, moteMat);
+  scene.add(motes);
+
+  // Slow whole-field drift: star field rotates almost imperceptibly
+  window._starscape = { stars, motes, motePos, motePhase };
+})();
+
+function tickStarscape(t) {
+  const sc = window._starscape;
+  if (!sc) return;
+  // Star field: extremely slow yaw (~2.4 deg/min)
+  sc.stars.rotation.y = t * 0.000007;
+  sc.stars.rotation.x = t * 0.000003;
+
+  // Motes: each orbits its own axis with an individual phase & speed
+  const pos   = sc.motePos;
+  const phase = sc.motePhase;
+  const buf   = sc.motes.geometry.attributes.position;
+  for (let i = 0; i < pos.length / 3; i++) {
+    const angle = phase[i*3] + t * phase[i*3+1];
+    const r     = phase[i*3+2];
+    // Orbit in the XZ plane with a fixed Y offset
+    const baseY = pos[i*3+1];
+    buf.array[i*3]   = r * Math.cos(angle);
+    buf.array[i*3+1] = baseY + Math.sin(angle * 0.37 + phase[i*3]) * 18;
+    buf.array[i*3+2] = r * Math.sin(angle);
+  }
+  buf.needsUpdate = true;
+}
 
 // ── Deterministic position from a string id ─────────────────────────────────
 // Produces a stable float in [0, 1) from any string + integer seed.
@@ -111,6 +248,15 @@ function buildScene() {
     new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.55 }),
   );
   scene.add(edgeLine);
+
+  // Recompute orbit centroid from current node positions
+  if (nodes.length) {
+    let sx = 0, sy = 0, sz = 0;
+    for (const n of nodes) { sx += n.x; sy += n.y; sz += n.z; }
+    orbit._center.set(sx / nodes.length, sy / nodes.length, sz / nodes.length);
+    // Reset orbit angle so it smoothly continues from the new center
+    orbit._baseAngle = null;
+  }
 }
 
 // ── Picking & interaction ─────────────────────────────────────────────────────
