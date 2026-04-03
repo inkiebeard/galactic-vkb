@@ -1,0 +1,345 @@
+import express, { RequestHandler } from 'express';
+import { createServer as createHttpServer } from 'http';
+import { createServer as createHttpsServer } from 'https';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { WebSocketServer, WebSocket } from 'ws';
+import { config } from '../config.js';
+import { getPool, isDbConnectionError } from '../db/client.js';
+import type { Adapters } from '../adapters/registry.js';
+import { handleIngest, handleQuery, handleRetune, handleStatus, handleDelete, handleReingest } from '../mcp/tools.js';
+import { createLogger } from '../logger.js';
+import { loadTls } from '../tls.js';
+
+const log = createLogger('obs');
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// ── Error response helper ─────────────────────────────────────────────────────
+function sendErr(res: import('express').Response, e: unknown, fallbackStatus = 500): void {
+  if (isDbConnectionError(e)) {
+    res.status(503).json({ ok: false, error: 'Database unavailable — check that PostgreSQL (Docker) is running' });
+  } else {
+    res.status(fallbackStatus).json({ ok: false, error: String(e) });
+  }
+}
+
+// ── Auth middleware ────────────────────────────────────────────────────────────
+function makeAuth(): RequestHandler {
+  return (req, res, next) => {
+    if (!config.OBS_SECRET) return next();
+    const auth = req.headers.authorization ?? '';
+    if (!auth.startsWith('Bearer ') || auth.slice(7) !== config.OBS_SECRET) {
+      res.status(401).json({ ok: false, error: 'Unauthorized' });
+      return;
+    }
+    next();
+  };
+}
+
+// ── WebSocket broadcast ───────────────────────────────────────────────────────
+const clients = new Set<WebSocket>();
+
+export function broadcastEvent(event: object): void {
+  const msg = JSON.stringify(event);
+  for (const ws of clients) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(msg, err => { if (err) clients.delete(ws); });
+    }
+  }
+}
+
+export function startObsServer(adapters: Adapters): void {
+  const app    = express();
+  const tls    = loadTls();
+  const scheme = tls ? 'https' : 'http';
+  const http   = tls ? createHttpsServer(tls, app) : createHttpServer(app);
+  const wss    = new WebSocketServer({ server: http, path: '/stream' });
+  const auth = makeAuth();
+  const db   = getPool();
+  // Express 5 types params as string | string[]; route params are always single strings
+  const param = (v: string | string[]): string => Array.isArray(v) ? v[0] : v;
+
+  wss.on('connection', ws => {
+    clients.add(ws);
+    ws.on('close', () => clients.delete(ws));
+    ws.on('error', () => clients.delete(ws));
+  });
+
+  app.use(express.json({ limit: '50mb' }));
+
+  // Redirect legacy paths to SPA hash routes (must be before static middleware)
+  app.get('/viz',      (_req, res) => res.redirect('/#viz'));
+  app.get('/viz/',     (_req, res) => res.redirect('/#viz'));
+  app.get('/ingest',   (_req, res) => res.redirect('/#ingest'));
+  app.get('/ingest/',  (_req, res) => res.redirect('/#ingest'));
+
+  // Serve SPA + all static assets from public/ root
+  app.use(express.static(join(__dirname, '../../public')));
+
+  // ── Health ──────────────────────────────────────────────────────────────
+  app.get('/health', auth, async (_req, res) => {
+    let postgresOk = false;
+    let postgresErr: string | null = null;
+    try {
+      await db.query('SELECT 1');
+      postgresOk = true;
+    } catch (e) {
+      postgresErr = isDbConnectionError(e)
+        ? 'Connection refused — is PostgreSQL running?'
+        : String(e);
+    }
+    let ollamaOk = false;
+    try {
+      const r = await fetch(`${config.OLLAMA_BASE_URL}/api/version`);
+      ollamaOk = r.ok;
+    } catch { /* unreachable */ }
+    if (!postgresOk) {
+      res.status(503).json({ ok: false, error: postgresErr, postgres: false, ollama: ollamaOk });
+    } else {
+      res.json({ ok: true, uptime: process.uptime(), postgres: true, ollama: ollamaOk });
+    }
+  });
+
+  // ── Status ──────────────────────────────────────────────────────────────
+  app.get('/status', auth, async (_req, res) => {
+    try {
+      const data = await handleStatus();
+      res.json({ ok: true, data });
+    } catch (e) { sendErr(res, e); }
+  });
+
+  // ── Entities ─────────────────────────────────────────────────────────────
+  app.get('/entities', auth, async (req, res) => {
+    try {
+      const { type, status, q, limit = '50', offset = '0', from, to } = req.query as Record<string, string>;
+      const params: unknown[] = [];
+      const where: string[] = [];
+
+      if (type)   { params.push(type);   where.push(`type = $${params.length}`); }
+      if (status) { params.push(status); where.push(`status = $${params.length}`); }
+      if (from)   { params.push(from);   where.push(`created_at >= $${params.length}`); }
+      if (to)     { params.push(to);     where.push(`created_at <= $${params.length}`); }
+      if (q) {
+        params.push(q);
+        where.push(`to_tsvector('english', COALESCE(summary,'')) @@ plainto_tsquery('english', $${params.length})`);
+      }
+
+      const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+      const lim  = Math.min(200, parseInt(limit,  10) || 50);
+      const off  = Math.max(0,    parseInt(offset, 10) || 0);
+
+      const { rows: entities } = await db.query(
+        `SELECT id, type, ref, summary, status, created_at, updated_at, meta
+         FROM entity ${whereClause} ORDER BY created_at DESC LIMIT $${params.length+1} OFFSET $${params.length+2}`,
+        [...params, lim, off],
+      );
+      const { rows: cnt } = await db.query<{ cnt: string }>(
+        `SELECT COUNT(*) AS cnt FROM entity ${whereClause}`, params,
+      );
+      res.json({ ok: true, data: { entities, total: parseInt(cnt[0]?.cnt ?? '0', 10) } });
+    } catch (e) { sendErr(res, e); }
+  });
+
+  // ── Broken entities ───────────────────────────────────────────────────────
+  // Must be registered BEFORE /entities/:id so Express doesn't treat 'broken'
+  // as a UUID parameter. Returns all non-ready entities annotated with their
+  // latest job state and a remediation hint: 'reingest' (raw committed),
+  // 'no_raw' (source lost), or 'stuck' (active job but stalled).
+  app.get('/entities/broken', auth, async (_req, res) => {
+    try {
+      const { rows } = await db.query<{
+        id: string; type: string; ref: string | null; status: string;
+        raw_store_key: string | null; meta: Record<string, unknown>;
+        created_at: Date; updated_at: Date;
+        job_id: string | null; job_stage: string | null;
+        job_error: string | null; job_created_at: Date | null;
+        chunk_count: string;
+      }>(`
+        SELECT
+          e.id, e.type, e.ref, e.status, e.raw_store_key, e.meta,
+          e.created_at, e.updated_at,
+          j.id          AS job_id,
+          j.stage       AS job_stage,
+          j.progress->>'error_detail' AS job_error,
+          j.created_at  AS job_created_at,
+          (SELECT COUNT(*) FROM chunk WHERE entity_id = e.id)::text AS chunk_count
+        FROM entity e
+        LEFT JOIN LATERAL (
+          SELECT id, stage, progress, created_at
+          FROM job
+          WHERE entity_id = e.id
+          ORDER BY created_at DESC
+          LIMIT 1
+        ) j ON true
+        WHERE e.status != 'ready'
+        ORDER BY e.updated_at DESC
+      `);
+
+      const broken = rows.map(r => {
+        const chunks = parseInt(r.chunk_count, 10);
+        let remedy: 'reingest' | 'no_raw' | 'stuck';
+        if (r.raw_store_key) {
+          remedy = r.job_stage && !['done', 'error'].includes(r.job_stage) ? 'stuck' : 'reingest';
+        } else {
+          remedy = 'no_raw';
+        }
+        return {
+          id: r.id, type: r.type, ref: r.ref, status: r.status,
+          has_raw: !!r.raw_store_key, meta: r.meta,
+          created_at: r.created_at, updated_at: r.updated_at,
+          chunk_count: chunks,
+          latest_job: r.job_id ? {
+            id: r.job_id, stage: r.job_stage, error: r.job_error, created_at: r.job_created_at,
+          } : null,
+          remedy,
+        };
+      });
+
+      res.json({ ok: true, data: { broken, total: broken.length } });
+    } catch (e) { sendErr(res, e); }
+  });
+
+  // ── Entity detail ─────────────────────────────────────────────────────────
+  app.get('/entities/:id', auth, async (req, res) => {
+    try {
+      const id = param(req.params.id);
+      const { rows: ent } = await db.query('SELECT * FROM entity WHERE id = $1', [id]);
+      if (!ent[0]) return void res.status(404).json({ ok: false, error: 'Not found' });
+      const { rows: chunks }   = await db.query('SELECT id,seq,summary,embed_model,embedded_at FROM chunk WHERE entity_id = $1 ORDER BY seq', [id]);
+      const { rows: sections } = await db.query('SELECT * FROM section_summary WHERE entity_id = $1 ORDER BY seq', [id]);
+      const { rows: relations } = await db.query(
+        'SELECT * FROM relation WHERE source_id = $1 OR target_id = $1 ORDER BY confidence DESC', [id],
+      );
+      res.json({ ok: true, data: { ...ent[0], chunks, sections, relations } });
+    } catch (e) { sendErr(res, e); }
+  });
+
+  // ── Entity raw ────────────────────────────────────────────────────────────
+  app.get('/entities/:id/raw', auth, async (req, res) => {
+    try {
+      const { rows } = await db.query<{ raw_store_key: string | null }>('SELECT raw_store_key FROM entity WHERE id = $1', [param(req.params.id)]);
+      if (!rows[0]) return void res.status(404).json({ ok: false, error: 'Not found' });
+      if (!rows[0].raw_store_key) return void res.status(404).json({ ok: false, error: 'No raw file' });
+      const text = await adapters.rawstore.read(rows[0].raw_store_key);
+      res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+      res.send(text);
+    } catch (e) { sendErr(res, e); }
+  });
+
+  // ── Delete entity ─────────────────────────────────────────────────────────
+  app.delete('/entities/:id', auth, async (req, res) => {
+    try {
+      const data = await handleDelete(param(req.params.id), adapters);
+      res.json({ ok: true, data });
+    } catch (e) { sendErr(res, e); }
+  });
+
+  // ── Chunks ────────────────────────────────────────────────────────────────
+  app.get('/chunks/:id', auth, async (req, res) => {
+    try {
+      const { rows } = await db.query('SELECT id,entity_id,seq,summary,embed_model,embedded_at,raw_store_key FROM chunk WHERE id = $1', [param(req.params.id)]);
+      if (!rows[0]) return void res.status(404).json({ ok: false, error: 'Not found' });
+      const { rows: relations } = await db.query(
+        'SELECT * FROM relation WHERE source_id = $1 OR target_id = $1 ORDER BY confidence DESC', [param(req.params.id)],
+      );
+      res.json({ ok: true, data: { ...rows[0], relations } });
+    } catch (e) { sendErr(res, e); }
+  });
+
+  app.get('/chunks/:id/raw', auth, async (req, res) => {
+    try {
+      const { rows } = await db.query<{ raw_store_key: string | null }>('SELECT raw_store_key FROM chunk WHERE id = $1', [param(req.params.id)]);
+      if (!rows[0]) return void res.status(404).json({ ok: false, error: 'Not found' });
+      if (!rows[0].raw_store_key) return void res.status(404).json({ ok: false, error: 'No raw file' });
+      const [ndjsonKey, idxStr] = rows[0].raw_store_key.split('#');
+      const ndjson = await adapters.rawstore.read(ndjsonKey);
+      const lines  = ndjson.split('\n').filter(Boolean);
+      const line   = JSON.parse(lines[parseInt(idxStr ?? '0', 10)]) as { text: string };
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.send(line.text);
+    } catch (e) { sendErr(res, e); }
+  });
+
+  // ── Relations ─────────────────────────────────────────────────────────────
+  app.get('/relations', auth, async (req, res) => {
+    try {
+      const { origin, rel_type, min_confidence, min_weight, source_kind, limit = '50', offset = '0' } = req.query as Record<string, string>;
+      const params: unknown[] = [];
+      const where: string[] = [];
+
+      if (origin)         { params.push(origin);              where.push(`origin = $${params.length}`); }
+      if (rel_type)       { params.push(rel_type);            where.push(`rel_type = $${params.length}`); }
+      if (min_confidence) { params.push(min_confidence);      where.push(`confidence >= $${params.length}`); }
+      if (min_weight)     { params.push(min_weight);          where.push(`weight >= $${params.length}`); }
+      if (source_kind)    { params.push(source_kind);         where.push(`source_kind = $${params.length}`); }
+
+      const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+      const lim = Math.min(500, parseInt(limit, 10) || 50);
+      const off = Math.max(0,   parseInt(offset, 10) || 0);
+
+      const { rows: relations } = await db.query(
+        `SELECT * FROM relation ${whereClause} ORDER BY confidence DESC LIMIT $${params.length+1} OFFSET $${params.length+2}`,
+        [...params, lim, off],
+      );
+      res.json({ ok: true, data: { relations } });
+    } catch (e) { sendErr(res, e); }
+  });
+
+  // ── Jobs ──────────────────────────────────────────────────────────────────
+  app.get('/jobs', auth, async (req, res) => {
+    try {
+      const { kind, stage, limit = '50' } = req.query as Record<string, string>;
+      const params: unknown[] = [];
+      const where: string[] = [];
+      if (kind)  { params.push(kind);  where.push(`kind = $${params.length}`); }
+      if (stage) { params.push(stage); where.push(`stage = $${params.length}`); }
+      const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+      const lim = Math.min(200, parseInt(limit, 10) || 50);
+      const { rows } = await db.query(
+        `SELECT * FROM job ${whereClause} ORDER BY created_at DESC LIMIT $${params.length+1}`,
+        [...params, lim],
+      );
+      res.json({ ok: true, data: { jobs: rows } });
+    } catch (e) { sendErr(res, e); }
+  });
+
+  // ── HTTP ingest/query/retune ──────────────────────────────────────────────
+  app.post('/ingest', auth, async (req, res) => {
+    try {
+      if (!req.body || typeof req.body !== 'object') {
+        res.status(400).json({ ok: false, error: 'Request body is missing — ensure Content-Type is application/json' });
+        return;
+      }
+      const data = await handleIngest(req.body);
+      res.json({ ok: true, data });
+    } catch (e) { sendErr(res, e, 400); }
+  });
+
+  app.post('/query', auth, async (req, res) => {
+    try {
+      const data = await handleQuery(req.body, adapters);
+      res.json({ ok: true, data });
+    } catch (e) { sendErr(res, e, 400); }
+  });
+
+  app.post('/retune', auth, async (req, res) => {
+    try {
+      const { scope, force } = req.body as { scope?: string; force?: boolean };
+      const data = await handleRetune(scope, force);
+      res.json({ ok: true, data });
+    } catch (e) { sendErr(res, e, 400); }
+  });
+  app.post('/reingest', auth, async (req, res) => {
+    try {
+      const { entity_id } = (req.body ?? {}) as { entity_id?: string };
+      const data = await handleReingest(entity_id);
+      res.json({ ok: true, data });
+    } catch (e) { sendErr(res, e, 400); }
+  });
+
+  http.listen(config.OBS_PORT, () => {
+    log.info(`${scheme.toUpperCase()} + WebSocket listening on :${config.OBS_PORT}`);
+    log.info(`App UI:     ${scheme}://localhost:${config.OBS_PORT}/`);
+  });
+}
