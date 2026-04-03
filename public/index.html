@@ -8,6 +8,7 @@
 {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}
 </script>
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3/dist/jszip.min.js"></script>
 <style>
   /* ── Design tokens ─────────────────────────────────────────────────────── */
   :root {
@@ -782,6 +783,67 @@ function isTextFile(name) {
   return /\.(txt|md|markdown|html?|csv|json|xml|rst|org|tex|js|ts|py|rb|go|rs|c|cpp|h|java|kt|swift|sql|yaml|yml|toml|sh|bash|zsh|ps1|r|jl|lua|pl|php)$/i.test(name);
 }
 
+function isEpub(name) {
+  return /\.epub$/i.test(name);
+}
+
+async function readFileArrayBuffer(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = e => resolve(e.target.result);
+    reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function collapseWhitespace(text) {
+  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+    .replace(/\t/g, ' ').replace(/ {2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// Parse an EPUB file and return extracted plain text.
+// EPUB is a ZIP containing XHTML chapters referenced by an OPF manifest.
+async function parseEpub(file) {
+  const buf = await readFileArrayBuffer(file);
+  const zip = await JSZip.loadAsync(buf);
+
+  // 1. container.xml → OPF path
+  const containerXml = await zip.file('META-INF/container.xml')?.async('string');
+  if (!containerXml) throw new Error('Missing META-INF/container.xml');
+  const containerDoc = new DOMParser().parseFromString(containerXml, 'application/xml');
+  const opfPath = containerDoc.querySelector('rootfile')?.getAttribute('full-path');
+  if (!opfPath) throw new Error('Cannot locate OPF in container.xml');
+
+  // 2. OPF → spine item hrefs in reading order
+  const opfXml = await zip.file(opfPath)?.async('string');
+  if (!opfXml) throw new Error(`Missing OPF at ${opfPath}`);
+  const opfDoc = new DOMParser().parseFromString(opfXml, 'application/xml');
+  const opfDir = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : '';
+
+  const manifest = {};
+  opfDoc.querySelectorAll('manifest item').forEach(item => {
+    manifest[item.getAttribute('id')] = item.getAttribute('href');
+  });
+  const spineHrefs = Array.from(opfDoc.querySelectorAll('spine itemref'))
+    .map(ref => manifest[ref.getAttribute('idref')])
+    .filter(Boolean);
+
+  // 3. Extract plain text from each XHTML chapter
+  const parts = [];
+  for (const href of spineHrefs) {
+    // href may contain a fragment (#anchor) — strip it for ZIP lookup
+    const zipPath = opfDir + href.replace(/#.*$/, '');
+    const html = await zip.file(zipPath)?.async('string');
+    if (!html) continue;
+    const doc  = new DOMParser().parseFromString(html, 'application/xhtml+xml');
+    const body = doc.querySelector('body');
+    if (body) parts.push(body.textContent || '');
+  }
+
+  if (!parts.length) throw new Error('No readable chapters found in EPUB');
+  return collapseWhitespace(parts.join('\n\n'));
+}
+
 async function readFileText(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -825,16 +887,25 @@ function renderFileList(listEl, files) {
 async function handleFileSelection(input, targetArr, listEl) {
   const rawFiles = Array.from(input.files || []);
   for (const f of rawFiles) {
-    if (!isTextFile(f.name)) {
-      targetArr.push({ name: f.name, displayName: normaliseName(f.name), size: f.size, text: null, path: f.webkitRelativePath || f.name, skipped: true, skipReason: 'unsupported format' });
-      continue;
-    }
-    try {
-      const text = await readFileText(f);
-      targetArr.push({ name: f.name, displayName: normaliseName(f.name), size: f.size, text, path: f.webkitRelativePath || f.name });
-    } catch (err) {
-      console.warn('Skipped', f.name, err.message);
-      targetArr.push({ name: f.name, displayName: normaliseName(f.name), size: f.size, text: null, path: f.webkitRelativePath || f.name, skipped: true, skipReason: 'read error' });
+    const base = { name: f.name, displayName: normaliseName(f.name), size: f.size, path: f.webkitRelativePath || f.name };
+    if (isEpub(f.name)) {
+      try {
+        const text = await parseEpub(f);
+        targetArr.push({ ...base, text });
+      } catch (err) {
+        console.warn('EPUB parse failed', f.name, err.message);
+        targetArr.push({ ...base, text: null, skipped: true, skipReason: 'epub parse error' });
+      }
+    } else if (isTextFile(f.name)) {
+      try {
+        const text = await readFileText(f);
+        targetArr.push({ ...base, text });
+      } catch (err) {
+        console.warn('Skipped', f.name, err.message);
+        targetArr.push({ ...base, text: null, skipped: true, skipReason: 'read error' });
+      }
+    } else {
+      targetArr.push({ ...base, text: null, skipped: true, skipReason: 'unsupported format' });
     }
   }
   renderFileList(listEl, targetArr);
@@ -862,13 +933,19 @@ folderInput.addEventListener('change', () => handleFileSelection(folderInput, pe
     const lst = id === 'files-drop' ? filesList    : folderList;
     const rawFiles = Array.from(dt.files);
     Promise.all(rawFiles.map(f => {
+      const base = { name: f.name, displayName: normaliseName(f.name), size: f.size, path: f.name };
+      if (isEpub(f.name)) {
+        return parseEpub(f)
+          .then(text => arr.push({ ...base, text }))
+          .catch(err => arr.push({ ...base, text: null, skipped: true, skipReason: 'epub parse error' }));
+      }
       if (!isTextFile(f.name)) {
-        arr.push({ name: f.name, displayName: normaliseName(f.name), size: f.size, text: null, path: f.name, skipped: true, skipReason: 'unsupported format' });
+        arr.push({ ...base, text: null, skipped: true, skipReason: 'unsupported format' });
         return;
       }
       return readFileText(f)
-        .then(text => arr.push({ name: f.name, displayName: normaliseName(f.name), size: f.size, text, path: f.name }))
-        .catch(err => arr.push({ name: f.name, displayName: normaliseName(f.name), size: f.size, text: null, path: f.name, skipped: true, skipReason: 'read error' }));
+        .then(text => arr.push({ ...base, text }))
+        .catch(() => arr.push({ ...base, text: null, skipped: true, skipReason: 'read error' }));
     })).then(() => { renderFileList(lst, arr); updateSubmitState(); });
   });
 });
