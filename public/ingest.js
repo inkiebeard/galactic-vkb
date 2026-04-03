@@ -63,19 +63,42 @@ async function hydrateLiveJobs() {
     const res = await fetch('/jobs?limit=200');
     const data = await res.json();
     if (!data.ok) return;
-    const archived = loadArchive();
+
+    const archived    = loadArchive();
     const archivedIds = new Set(archived.map(a => a.id));
+    const toArchive   = [];
+
     for (const j of data.data.jobs) {
       if (archivedIds.has(j.id) || jobs.has(j.id)) continue;
-      const settledStages = new Set(['done', 'error']);
-      const isSettled = settledStages.has(j.stage);
-      const ageMs = Date.now() - new Date(j.completed_at ?? j.created_at).getTime();
-      if (isSettled && ageMs > 5 * 60 * 1000) continue;
-      const label = jobLabelFromRecord(j);
-      const errMsg = j.stage === 'error' ? (j.progress?.error_detail ?? null) : null;
-      registerJob(j.id, j.entity_id, label, true);
-      if (j.stage !== 'queued') updateJobStage(j.id, j.stage, errMsg);
-      if (isSettled) scheduleArchive(j.id);
+      const isSettled = j.stage === 'done' || j.stage === 'error';
+      const ageMs     = Date.now() - new Date(j.completed_at ?? j.created_at).getTime();
+
+      if (!isSettled || ageMs <= 5 * 60 * 1000) {
+        // Active or recently-settled: show in pipeline, auto-archive after delay
+        const label  = jobLabelFromRecord(j);
+        const errMsg = j.stage === 'error' ? (j.progress?.error_detail ?? null) : null;
+        registerJob(j.id, j.entity_id, label, /* skipPoll */ true);
+        if (j.stage !== 'queued') updateJobStage(j.id, j.stage, errMsg);
+        if (isSettled) scheduleArchive(j.id);
+      } else {
+        // Old settled job: put straight into archive, skip pipeline
+        toArchive.push(j);
+      }
+    }
+
+    if (toArchive.length > 0) {
+      for (const j of toArchive) {
+        archived.unshift({
+          id:         j.id,
+          label:      jobLabelFromRecord(j),
+          stage:      j.stage,
+          error:      j.stage === 'error' ? (j.progress?.error_detail ?? null) : null,
+          archivedAt: Date.now(),
+        });
+      }
+      if (archived.length > 200) archived.splice(200);
+      saveArchive(archived);
+      renderArchive();
     }
   } catch { /* ignore */ }
 }
