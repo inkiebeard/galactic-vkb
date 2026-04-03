@@ -5,6 +5,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 let nodes        = [];
 let links        = [];
 let allRelations = [];
+let resolution   = 'entity';   // 'entity' | 'chunk'
 
 // ── Three.js bootstrap ────────────────────────────────────────────────────────
 const canvas  = document.getElementById('graph');
@@ -40,8 +41,9 @@ window.addEventListener('resize', resize);
 renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
 
 // ── Node/Edge colors ──────────────────────────────────────────────────────────
-const NODE_GEO = new THREE.SphereGeometry(6, 16, 12);
-const NODE_MAT = new THREE.MeshLambertMaterial();
+const NODE_GEO  = new THREE.SphereGeometry(6, 16, 12);
+const CHUNK_GEO = new THREE.SphereGeometry(3, 10, 8);
+const NODE_MAT  = new THREE.MeshLambertMaterial();
 let nodeMesh = null;
 let edgeLine = null;
 
@@ -66,11 +68,12 @@ function buildScene() {
   if (!nodes.length) return;
 
   // instanced spheres
-  nodeMesh = new THREE.InstancedMesh(NODE_GEO, NODE_MAT, nodes.length);
+  const geo = resolution === 'chunk' ? CHUNK_GEO : NODE_GEO;
+  nodeMesh = new THREE.InstancedMesh(geo, NODE_MAT, nodes.length);
   nodes.forEach((n, i) => {
     _mat.setPosition(n.x, n.y, n.z);
     nodeMesh.setMatrixAt(i, _mat);
-    nodeMesh.setColorAt(i, NODE_COLORS[n.status] ?? NODE_COLORS.pending);
+    nodeMesh.setColorAt(i, n._color ?? NODE_COLORS[n.status] ?? NODE_COLORS.pending);
   });
   nodeMesh.instanceMatrix.needsUpdate = true;
   nodeMesh.instanceColor.needsUpdate  = true;
@@ -143,17 +146,25 @@ canvas.addEventListener('pointerup', e => {
 function showDetail(n) {
   const { escHtml } = window.__vkb;
   const rels = links.filter(l => (l._src?.id === n.id) || (l._tgt?.id === n.id));
+  const relBadges = rels.map(r =>
+    '<span class="badge b-' +
+    (r.origin?.includes('content') ? 'content' : r.origin === 'asserted' ? 'asserted' : 'semantic') +
+    '">' + (r.origin ?? '') + ' ' + (r.confidence != null ? r.confidence.toFixed(2) : '') + '</span>'
+  ).join('');
+  if (resolution === 'chunk') {
+    document.getElementById('detail').innerHTML =
+      '<strong>chunk §' + escHtml(String((n.seq ?? 0) + 1)) + '</strong>' +
+      '<span style="color:var(--hint);font-size:10px"> · entity ' + escHtml((n.entityId ?? '').slice(0, 8)) + '</span><br>' +
+      '<span style="color:var(--hint);font-size:10px">' + n.id + '</span><br><br>' +
+      escHtml(n.summary || n.label || '(no summary yet)') + '<br><br>' +
+      '<div class="pill-row">' + relBadges + '</div>';
+    return;
+  }
   document.getElementById('detail').innerHTML =
     '<strong>' + escHtml(n.type) + '</strong><br>' +
     '<span style="color:var(--hint);font-size:10px">' + n.id + '</span><br><br>' +
     escHtml(n.summary || n.label || '') + '<br><br>' +
-    '<div class="pill-row">' +
-    rels.map(r =>
-      '<span class="badge b-' +
-      (r.origin?.includes('content') ? 'content' : r.origin === 'asserted' ? 'asserted' : 'semantic') +
-      '">' + (r.origin ?? '') + ' ' + (r.confidence != null ? r.confidence.toFixed(2) : '') + '</span>'
-    ).join('') +
-    '</div>';
+    '<div class="pill-row">' + relBadges + '</div>';
 }
 
 // ── WS status ─────────────────────────────────────────────────────────────────
@@ -189,8 +200,80 @@ function pruneEvents(el) {
   Array.from(el.children).forEach(c => { if (+(c.dataset.evTs ?? 0) < cutoff) c.remove(); });
 }
 
+// ── refreshChunks ────────────────────────────────────────────────────────────
+async function refreshChunks() {
+  try {
+    const [statusRes, chunksRes, relationsRes, jobsRes] = await Promise.all([
+      fetch('/status'),
+      fetch('/chunks?limit=2000'),
+      fetch('/relations?source_kind=chunk&limit=5000'),
+      fetch('/jobs?limit=30'),
+    ]);
+    const status        = await statusRes.json();
+    const chunksData    = await chunksRes.json();
+    const relationsData = await relationsRes.json();
+    const jobs          = await jobsRes.json();
+
+    document.getElementById('s-entities').textContent  = status.data?.entity_count   ?? '?';
+    document.getElementById('s-chunks').textContent    = status.data?.chunk_count    ?? '?';
+    document.getElementById('s-relations').textContent = status.data?.relation_count ?? '?';
+    document.getElementById('s-queue').textContent     = status.data?.queue_depth    ?? '?';
+    renderJobs(jobs.data?.jobs ?? []);
+
+    // Assign a deterministic base position per entity so chunks cluster together
+    const existPos   = new Map(nodes.map(n => [n.id, n]));
+    const entityBase = new Map();
+    const sc = 400;
+    for (const c of (chunksData.data?.chunks ?? [])) {
+      if (!entityBase.has(c.entity_id)) {
+        entityBase.set(c.entity_id, {
+          x: (Math.random() - 0.5) * sc,
+          y: (Math.random() - 0.5) * sc,
+          z: (Math.random() - 0.5) * sc,
+        });
+      }
+    }
+
+    nodes = (chunksData.data?.chunks ?? []).map(c => {
+      const ex   = existPos.get(c.id);
+      const meta = c.entity_meta ?? {};
+      const entityLabel = meta.title || meta.filename || c.entity_ref || c.entity_type || c.entity_id.slice(0, 8);
+      const lbl  = `${entityLabel} §${(c.seq ?? 0) + 1}`;
+      // Deterministic hue per entity from its UUID
+      const hue  = parseInt(c.entity_id.replace(/-/g, '').slice(0, 4), 16) / 65535;
+      const color = new THREE.Color().setHSL(hue, 0.55, 0.45);
+      if (ex) return Object.assign(ex, { entityId: c.entity_id, seq: c.seq, label: lbl, summary: c.summary ?? '', _color: color });
+      const base = entityBase.get(c.entity_id);
+      return {
+        id: c.id, entityId: c.entity_id, seq: c.seq, label: lbl, summary: c.summary ?? '', _color: color,
+        x: base.x + (Math.random() - 0.5) * 80,
+        y: base.y + (Math.random() - 0.5) * 80,
+        z: base.z + (Math.random() - 0.5) * 80,
+      };
+    });
+
+    const nodeIds = new Set(nodes.map(n => n.id));
+    const nodeIdx = new Map(nodes.map((n, i) => [n.id, i]));
+    allRelations  = relationsData.data?.relations ?? [];
+    links = allRelations
+      .filter(r => nodeIds.has(r.source_id) && nodeIds.has(r.target_id))
+      .map(r => ({
+        source: r.source_id, target: r.target_id,
+        origin: r.origin, weight: r.weight, confidence: r.confidence,
+        _src: nodes[nodeIdx.get(r.source_id)],
+        _tgt: nodes[nodeIdx.get(r.target_id)],
+      }));
+
+    buildScene();
+    renderHistogram(allRelations);
+  } catch (err) {
+    console.warn('viz chunk refresh error:', err);
+  }
+}
+
 // ── refresh ───────────────────────────────────────────────────────────────────
 async function refresh() {
+  if (resolution === 'chunk') { await refreshChunks(); return; }
   try {
     const [statusRes, entitiesRes, relationsRes, jobsRes] = await Promise.all([
       fetch('/status'),
@@ -307,10 +390,22 @@ function subscribeTobus() {
   });
 }
 
+// ── Resolution toggle ─────────────────────────────────────────────────────────
+function setResolution(res) {
+  resolution = res;
+  nodes = []; links = [];  // reset positions so the new graph lays out fresh
+  document.querySelectorAll('.res-btn').forEach(b => b.classList.toggle('active', b.dataset.res === res));
+  document.getElementById('detail').textContent = 'Click a node to inspect';
+  refresh();
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 window.__vkb_viz = { init };
 
 function init() {
+  document.querySelectorAll('.res-btn').forEach(btn => {
+    btn.addEventListener('click', () => setResolution(btn.dataset.res));
+  });
   resize();
   refresh();
   setInterval(refresh, 30_000);

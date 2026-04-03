@@ -248,6 +248,34 @@ export function startObsServer(adapters: Adapters): void {
     } catch (e) { sendErr(res, e); }
   });
 
+  // ── Chunks (list) ─────────────────────────────────────────────────────────
+  app.get('/chunks', auth, async (req, res) => {
+    try {
+      const { entity_id, limit = '500', offset = '0' } = req.query as Record<string, string>;
+      const params: unknown[] = [];
+      const where: string[] = [];
+      if (entity_id) { params.push(entity_id); where.push(`c.entity_id = $${params.length}`); }
+      const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+      const lim = Math.min(2000, parseInt(limit, 10) || 500);
+      const off = Math.max(0, parseInt(offset, 10) || 0);
+      const { rows } = await db.query(
+        `SELECT c.id, c.entity_id, c.seq, c.summary,
+                e.type AS entity_type, e.ref AS entity_ref, e.meta AS entity_meta
+         FROM chunk c
+         JOIN entity e ON e.id = c.entity_id
+         ${whereClause}
+         ORDER BY c.entity_id, c.seq
+         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, lim, off],
+      );
+      const { rows: cnt } = await db.query<{ cnt: string }>(
+        `SELECT COUNT(*) AS cnt FROM chunk c JOIN entity e ON e.id = c.entity_id ${whereClause}`,
+        params,
+      );
+      res.json({ ok: true, data: { chunks: rows, total: parseInt(cnt[0]?.cnt ?? '0', 10) } });
+    } catch (e) { sendErr(res, e); }
+  });
+
   // ── Chunks ────────────────────────────────────────────────────────────────
   app.get('/chunks/:id', auth, async (req, res) => {
     try {
