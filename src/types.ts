@@ -65,6 +65,10 @@ export interface JobProgress {
   retry_count: number;
   error_detail?: string;
   from_rawstore?: boolean;
+  /** Total number of LLM summarisation calls for this job (chunks + sections + 1 entity). */
+  summary_steps_total?: number;
+  /** How many summarisation calls have completed so far. */
+  summary_steps_done?: number;
 }
 
 export interface Job {

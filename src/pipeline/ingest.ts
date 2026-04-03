@@ -285,12 +285,45 @@ export async function runIngestPipeline(
     );
     const existingChunkSumMap = new Map(existingChunkSums.map(r => [r.id, r.summary ?? null]));
 
+    // Pre-load existing section summaries here (needed for both skip logic and
+    // recovery counting below — avoids a second round-trip later).
+    const { rows: existingSecSums } = await db.query<{ id: string; summary: string }>(
+      'SELECT id, summary FROM section_summary WHERE entity_id = $1',
+      [entityId],
+    );
+    const existingSecSumMap = new Map(existingSecSums.map(r => [r.id, r.summary]));
+
     // Step 9 — Summarise: L1 chunk (parallel) → L2 section → L3 entity
     //
     // Chunk summaries are the dominant cost for large documents. We run up to
     // SUMMARY_CONCURRENCY calls in parallel so an epub with 300+ chunks doesn't
     // stall the worker for tens of minutes on a single Ollama thread.
     // Chunks that already have summaries from a prior attempt are skipped.
+
+    // Total LLM calls = one per chunk + one per section + one entity summary.
+    const summaryStepsTotal = rawChunks.length + sections.length + 1;
+    let summaryStepsDone = 0;
+
+    // Count all already-completed steps so recovery starts with an accurate counter.
+    for (const chunkId of chunkIds) {
+      if (existingChunkSumMap.get(chunkId)) summaryStepsDone++;
+    }
+    for (const sectionId of sectionIds) {
+      if (existingSecSumMap.get(sectionId)) summaryStepsDone++;
+    }
+    // entity summary already written on a prior attempt
+    const { rows: entitySumRows } = await db.query<{ summary: string | null }>(
+      'SELECT summary FROM entity WHERE id = $1',
+      [entityId],
+    );
+    const entityAlreadySummarised = !!entitySumRows[0]?.summary;
+    if (entityAlreadySummarised) summaryStepsDone++;
+
+    await patchProgress(db, jobId, {
+      summary_steps_total: summaryStepsTotal,
+      summary_steps_done:  summaryStepsDone,
+    });
+
     let summarisedCount = 0;
     await pConcurrent(rawChunks, config.SUMMARY_CONCURRENCY, async (chunk, i) => {
       if (existingChunkSumMap.get(chunkIds[i])) {
@@ -300,9 +333,10 @@ export async function runIngestPipeline(
       const summary = await adapters.llm.complete(prompts.chunkSummary, chunk.text);
       await db.query('UPDATE chunk SET summary = $1 WHERE id = $2', [summary.trim(), chunkIds[i]]);
       summarisedCount++;
+      summaryStepsDone++;
       // Throttle progress writes: update every 5 chunks or on the final one
       if (summarisedCount % 5 === 0 || summarisedCount === rawChunks.length) {
-        await patchProgress(db, jobId, { chunks_done: summarisedCount });
+        await patchProgress(db, jobId, { chunks_done: summarisedCount, summary_steps_done: summaryStepsDone });
       }
     });
 
@@ -312,18 +346,16 @@ export async function runIngestPipeline(
     );
     const chunkSumMap = new Map(chunkSumRows.map(r => [r.id, r.summary ?? '']));
 
-    // Pre-load existing section summaries to skip already-done sections on retry.
-    const { rows: existingSecSums } = await db.query<{ id: string; summary: string }>(
-      'SELECT id, summary FROM section_summary WHERE entity_id = $1',
-      [entityId],
-    );
-    const existingSecSumMap = new Map(existingSecSums.map(r => [r.id, r.summary]));
-
     for (let i = 0; i < sections.length; i++) {
-      if (existingSecSumMap.get(sectionIds[i])) continue; // Already done in a prior attempt
+      if (existingSecSumMap.get(sectionIds[i])) {
+        summaryStepsDone++;
+        continue; // Already done in a prior attempt
+      }
       const sectionText = sections[i].chunk_ids.map(cid => chunkSumMap.get(cid) ?? '').join('\n\n');
       const secSummary = await adapters.llm.complete(prompts.sectionSummary, sectionText);
       await db.query('UPDATE section_summary SET summary = $1 WHERE id = $2', [secSummary.trim(), sectionIds[i]]);
+      summaryStepsDone++;
+      await patchProgress(db, jobId, { summary_steps_done: summaryStepsDone });
     }
 
     const { rows: secSumRows } = await db.query<{ summary: string }>(
@@ -344,11 +376,22 @@ export async function runIngestPipeline(
       entitySummaryInput = entitySummaryInput.slice(0, config.SUMMARY_MAX_INPUT_CHARS);
     }
 
-    const entitySummary = await adapters.llm.complete(prompts.entitySummary, entitySummaryInput);
-    await db.query(
-      `UPDATE entity SET summary = $1, summary_version = summary_version + 1, updated_at = NOW() WHERE id = $2`,
-      [entitySummary.trim(), entityId],
+    if (!entityAlreadySummarised) {
+      const freshEntitySummary = await adapters.llm.complete(prompts.entitySummary, entitySummaryInput);
+      summaryStepsDone++;
+      await patchProgress(db, jobId, { summary_steps_done: summaryStepsDone });
+      await db.query(
+        `UPDATE entity SET summary = $1, summary_version = summary_version + 1, updated_at = NOW() WHERE id = $2`,
+        [freshEntitySummary.trim(), entityId],
+      );
+    }
+
+    // Read entity summary from DB — covers both the fresh case and the skip case.
+    const { rows: entitySumRow } = await db.query<{ summary: string | null }>(
+      'SELECT summary FROM entity WHERE id = $1',
+      [entityId],
     );
+    const entitySummary = entitySumRow[0]?.summary ?? '';
 
     // Step 10 — Extract relations
     await setStage(db, jobId, 'extracting');
