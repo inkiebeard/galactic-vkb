@@ -79,6 +79,7 @@ async function hydrateLiveJobs() {
         const errMsg = j.stage === 'error' ? (j.progress?.error_detail ?? null) : null;
         registerJob(j.id, j.entity_id, label, /* skipPoll */ true);
         if (j.stage !== 'queued') updateJobStage(j.id, j.stage, errMsg);
+        updateStageProgress(j.id, j.stage, j.progress);
         if (isSettled) scheduleArchive(j.id);
       } else {
         // Old settled job: put straight into archive, skip pipeline
@@ -257,6 +258,7 @@ function createJobCard(jobId, label) {
         <div class="stage-node sn-pending" id="sn-${jobId}-${s}">
           <div class="stage-dot"></div>
           <div class="stage-label">${s}</div>
+          <div class="stage-sub" id="ssub-${jobId}-${s}"></div>
         </div>
       `).join('')}
     </div>
@@ -314,9 +316,50 @@ function updateJobStage(jobId, stage, errorMsg) {
   } else if (existingErr) {
     existingErr.remove();
   }
+  // Clear sub-labels for stages we're not currently in
+  STAGES.filter(s => s !== 'queued' && s !== stage).forEach(s => {
+    const subEl = document.getElementById(`ssub-${jobId}-${s}`);
+    if (subEl) subEl.textContent = '';
+  });
   if (!isError) job.priorStage = stage;
   if (isDone || isError) scheduleArchive(jobId);
   checkCompletion();
+}
+
+function updateStageProgress(jobId, stage, progress) {
+  const subEl = document.getElementById(`ssub-${jobId}-${stage}`);
+  if (!subEl) return;
+  switch (stage) {
+    case 'chunking': {
+      const total = progress?.chunks_total;
+      if (total) subEl.textContent = `${total} chunks`;
+      break;
+    }
+    case 'embedding': {
+      const done  = progress?.chunks_done;
+      const total = progress?.chunks_total;
+      if (total) subEl.textContent = `${done ?? 0} / ${total}`;
+      break;
+    }
+    case 'sectioning': {
+      const done = progress?.sections_done;
+      if (done) subEl.textContent = `${done} sections`;
+      break;
+    }
+    case 'summarising': {
+      const total      = progress?.summary_steps_total;
+      const done       = progress?.summary_steps_done;
+      const chunksDone = progress?.chunks_done;
+      if (total) {
+        subEl.textContent = `${done ?? 0} / ${total}`;
+      } else if (chunksDone) {
+        subEl.textContent = `${chunksDone} chunks`;
+      }
+      break;
+    }
+    default:
+      break;
+  }
 }
 
 function checkCompletion() {
@@ -394,9 +437,12 @@ async function pollJob(jobId) {
       const data = await res.json();
       if (!data.ok) return;
       const found = data.data.jobs.find(j => j.id === jobId);
-      if (!found || found.stage === job.stage) return;
-      const errMsg = found.stage === 'error' ? (found.progress?.error_detail ?? 'Pipeline error') : null;
-      updateJobStage(jobId, found.stage, errMsg);
+      if (!found) return;
+      if (found.stage !== job.stage) {
+        const errMsg = found.stage === 'error' ? (found.progress?.error_detail ?? 'Pipeline error') : null;
+        updateJobStage(jobId, found.stage, errMsg);
+      }
+      updateStageProgress(jobId, found.stage, found.progress);
     } catch {}
   }, 2000);
 }
