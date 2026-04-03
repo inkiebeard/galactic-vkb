@@ -4,6 +4,90 @@ A self-contained, local-first semantic memory system built on Postgres + pgvecto
 
 ---
 
+## Architecture overview
+
+```mermaid
+graph TD
+    subgraph Clients
+        A[MCP Host\nClaude Desktop / CLI]
+        B[Browser UI\nlocalhost:4242]
+    end
+
+    subgraph vkb process
+        MCP[MCP Server\nstdio or HTTP/SSE :3333]
+        HTTP[HTTP Server\n:4242]
+        COORD[Coordinator\nWorker Pool]
+        PIPE[Ingest / Retune\nPipeline]
+
+        subgraph Adapters
+            FETCH[fetch\nreadability]
+            CHUNK[chunk\nsliding-window]
+            EMBED[embed\nollama]
+            SECT[section\nsimilarity-valley]
+            REL[relation\nheuristic + LLM]
+            LLM[llm\nollama]
+            RAW[rawstore\nfilesystem]
+        end
+    end
+
+    subgraph External
+        PG[(Postgres\npgvector)]
+        OLL[Ollama]
+        FS[Filesystem\nrawstore/]
+    end
+
+    A -->|MCP tools| MCP
+    B -->|REST / SSE| HTTP
+    MCP --> COORD
+    HTTP --> COORD
+    COORD --> PIPE
+    PIPE --> FETCH & CHUNK & EMBED & SECT & REL & LLM & RAW
+    EMBED -->|vectors| OLL
+    LLM --> OLL
+    RAW --> FS
+    PIPE -->|upsert| PG
+```
+
+---
+
+## Ingestion pipeline
+
+```mermaid
+flowchart TD
+    START([Job queued]) --> P1
+
+    subgraph P1["Phase 1 — Persist (fetching)"]
+        F1{raw_store_key\nalready set?}
+        F1 -- yes --> REUSE[Load entity.md\nfrom rawstore]
+        F1 -- no --> FETCH2[Fetch raw text\nURL → readability\nor staging file]
+        FETCH2 --> WRITE[Write entity.md\nto rawstore]
+        WRITE --> COMMIT[Commit raw_store_key\nto DB ✓ checkpoint]
+    end
+
+    REUSE & COMMIT --> P2
+
+    subgraph P2["Phase 2 — Derive"]
+        S2{section_summaries\nalready exist?}
+        S2 -- yes --> RELOAD[Reload chunks +\nsections from DB]
+        S2 -- no --> CHUNK2[Chunk\nsliding-window]
+        CHUNK2 --> EMBED2[Embed\nnomic-embed-text]
+        EMBED2 --> SECT2[Section\nsimilarity-valley]
+        SECT2 --> SECT_COMMIT[Write section_summary\nto DB ✓ checkpoint]
+    end
+
+    RELOAD & SECT_COMMIT --> P3
+
+    subgraph P3["Phase 3 — Intelligence (summarising)"]
+        SUM_C[Summarise each chunk\nLLM]
+        SUM_S[Summarise each section\nLLM]
+        REL2[Extract relations\nheuristic + LLM]
+    end
+
+    P3 --> DONE([Entity ready\nstatus = ready])
+```
+
+---
+
 ## Requirements
 
 | Tool | Version |
