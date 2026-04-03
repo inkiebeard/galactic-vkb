@@ -6,6 +6,7 @@ let nodes        = [];
 let links        = [];
 let allRelations = [];
 let resolution   = 'entity';   // 'entity' | 'chunk'
+let _refreshPending = false;   // debounce WS-triggered refreshes
 
 // ── Three.js bootstrap ────────────────────────────────────────────────────────
 const canvas  = document.getElementById('graph');
@@ -39,6 +40,17 @@ function resize() {
 window.addEventListener('resize', resize);
 
 renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+
+// ── Deterministic position from a string id ─────────────────────────────────
+// Produces a stable float in [0, 1) from any string + integer seed.
+function hashF(str, seed) {
+  let h = seed ^ 0xdeadbeef;
+  for (let i = 0; i < str.length; i++) {
+    h = Math.imul(h ^ str.charCodeAt(i), 0x9e3779b9);
+    h ^= h >>> 16;
+  }
+  return (h >>> 0) / 0x100000000;
+}
 
 // ── Node/Edge colors ──────────────────────────────────────────────────────────
 const NODE_GEO  = new THREE.SphereGeometry(6, 16, 12);
@@ -200,17 +212,24 @@ function pruneEvents(el) {
   Array.from(el.children).forEach(c => { if (+(c.dataset.evTs ?? 0) < cutoff) c.remove(); });
 }
 
+// ── Loading overlay ─────────────────────────────────────────────────────────
+const _projLoading = document.getElementById('proj-loading');
+function setLoading(on) {
+  _projLoading?.classList.toggle('visible', on);
+}
+
 // ── refreshChunks ────────────────────────────────────────────────────────────
 async function refreshChunks() {
+  setLoading(true);
   try {
-    const [statusRes, chunksRes, relationsRes, jobsRes] = await Promise.all([
+    const [statusRes, projRes, relationsRes, jobsRes] = await Promise.all([
       fetch('/status'),
-      fetch('/chunks?limit=2000'),
+      fetch('/chunks/projection'),
       fetch('/relations?source_kind=chunk&limit=5000'),
       fetch('/jobs?limit=30'),
     ]);
     const status        = await statusRes.json();
-    const chunksData    = await chunksRes.json();
+    const projData      = await projRes.json();
     const relationsData = await relationsRes.json();
     const jobs          = await jobsRes.json();
 
@@ -220,36 +239,20 @@ async function refreshChunks() {
     document.getElementById('s-queue').textContent     = status.data?.queue_depth    ?? '?';
     renderJobs(jobs.data?.jobs ?? []);
 
-    // Assign a deterministic base position per entity so chunks cluster together
-    const existPos   = new Map(nodes.map(n => [n.id, n]));
-    const entityBase = new Map();
-    const sc = 400;
-    for (const c of (chunksData.data?.chunks ?? [])) {
-      if (!entityBase.has(c.entity_id)) {
-        entityBase.set(c.entity_id, {
-          x: (Math.random() - 0.5) * sc,
-          y: (Math.random() - 0.5) * sc,
-          z: (Math.random() - 0.5) * sc,
-        });
-      }
-    }
+    const points  = projData.data?.points ?? [];
+    const existPos = new Map(nodes.map(n => [n.id, n]));
 
-    nodes = (chunksData.data?.chunks ?? []).map(c => {
-      const ex   = existPos.get(c.id);
-      const meta = c.entity_meta ?? {};
-      const entityLabel = meta.title || meta.filename || c.entity_ref || c.entity_type || c.entity_id.slice(0, 8);
-      const lbl  = `${entityLabel} §${(c.seq ?? 0) + 1}`;
-      // Deterministic hue per entity from its UUID
-      const hue  = parseInt(c.entity_id.replace(/-/g, '').slice(0, 4), 16) / 65535;
+    nodes = points.map(p => {
+      const ex    = existPos.get(p.id);
+      const meta  = p.entity_meta ?? {};
+      const entityLabel = meta.title || meta.filename || p.entity_ref || p.entity_type || p.entity_id.slice(0, 8);
+      const lbl   = `${entityLabel} §${(p.seq ?? 0) + 1}`;
+      const hue   = parseInt(p.entity_id.replace(/-/g, '').slice(0, 4), 16) / 65535;
       const color = new THREE.Color().setHSL(hue, 0.55, 0.45);
-      if (ex) return Object.assign(ex, { entityId: c.entity_id, seq: c.seq, label: lbl, summary: c.summary ?? '', _color: color });
-      const base = entityBase.get(c.entity_id);
-      return {
-        id: c.id, entityId: c.entity_id, seq: c.seq, label: lbl, summary: c.summary ?? '', _color: color,
-        x: base.x + (Math.random() - 0.5) * 80,
-        y: base.y + (Math.random() - 0.5) * 80,
-        z: base.z + (Math.random() - 0.5) * 80,
-      };
+      // Projection coords are authoritative — always update x/y/z from server
+      const pos = { x: p.x, y: p.y, z: p.z };
+      if (ex) return Object.assign(ex, { entityId: p.entity_id, seq: p.seq, label: lbl, summary: p.summary ?? '', _color: color, ...pos });
+      return { id: p.id, entityId: p.entity_id, seq: p.seq, label: lbl, summary: p.summary ?? '', _color: color, ...pos };
     });
 
     const nodeIds = new Set(nodes.map(n => n.id));
@@ -268,21 +271,24 @@ async function refreshChunks() {
     renderHistogram(allRelations);
   } catch (err) {
     console.warn('viz chunk refresh error:', err);
+  } finally {
+    setLoading(false);
   }
 }
 
 // ── refresh ───────────────────────────────────────────────────────────────────
 async function refresh() {
   if (resolution === 'chunk') { await refreshChunks(); return; }
+  setLoading(true);
   try {
-    const [statusRes, entitiesRes, relationsRes, jobsRes] = await Promise.all([
+    const [statusRes, projRes, relationsRes, jobsRes] = await Promise.all([
       fetch('/status'),
-      fetch('/entities?limit=200'),
+      fetch('/entities/projection'),
       fetch('/relations?limit=500&min_confidence=0.4'),
       fetch('/jobs?limit=30'),
     ]);
     const status    = await statusRes.json();
-    const entities  = await entitiesRes.json();
+    const projData  = await projRes.json();
     const relations = await relationsRes.json();
     const jobs      = await jobsRes.json();
 
@@ -293,15 +299,15 @@ async function refresh() {
 
     renderJobs(jobs.data?.jobs ?? []);
 
+    const points   = projData.data?.points ?? [];
     const existPos = new Map(nodes.map(n => [n.id, n]));
-    const sc = 300;
-    nodes = (entities.data?.entities ?? []).map(e => {
-      const ex  = existPos.get(e.id);
-      const lbl = (e.summary || e.type || e.id).slice(0, 60);
+    nodes = points.map(p => {
+      const ex  = existPos.get(p.id);
+      const lbl = (p.summary || p.type || p.id).slice(0, 60);
+      const pos = { x: p.x, y: p.y, z: p.z };
       return ex
-        ? Object.assign(ex, { type: e.type, status: e.status, label: lbl, summary: e.summary ?? '' })
-        : { id: e.id, type: e.type, status: e.status, label: lbl, summary: e.summary ?? '',
-            x: (Math.random()-0.5)*sc, y: (Math.random()-0.5)*sc, z: (Math.random()-0.5)*sc };
+        ? Object.assign(ex, { type: p.type, status: p.status, label: lbl, summary: p.summary ?? '', ...pos })
+        : { id: p.id, type: p.type, status: p.status, label: lbl, summary: p.summary ?? '', ...pos };
     });
 
     const nodeIds = new Set(nodes.map(n => n.id));
@@ -320,6 +326,8 @@ async function refresh() {
     renderHistogram(allRelations);
   } catch (err) {
     console.warn('viz refresh error:', err);
+  } finally {
+    setLoading(false);
   }
 }
 
@@ -377,14 +385,21 @@ function renderHistogram(rels) {
 }
 
 // ── Bus subscriptions ─────────────────────────────────────────────────────────
+// Debounce helper: coalesces rapid successive WS events into a single refresh.
+function scheduleRefresh(delayMs = 800) {
+  if (_refreshPending) return;
+  _refreshPending = true;
+  setTimeout(() => { _refreshPending = false; refresh(); }, delayMs);
+}
+
 function subscribeTobus() {
   const bus = window.__vkb.bus;
-  bus.subscribe('ws_open',  () => setWsStatus(true));
-  bus.subscribe('ws_close', () => setWsStatus(false));
-  const REFRESH_TYPES = ['complete','stage_change','error','worker_crash','retune_scheduled'];
-  REFRESH_TYPES.forEach(type => bus.subscribe(type, () => setTimeout(refresh, 600)));
-  bus.subscribe('ws_open',  () => pushEvent({ type: 'ws_open' }));
-  bus.subscribe('ws_close', () => pushEvent({ type: 'ws_close' }));
+  bus.subscribe('ws_open',  () => { setWsStatus(true);  pushEvent({ type: 'ws_open' });  scheduleRefresh(200); });
+  bus.subscribe('ws_close', () => { setWsStatus(false); pushEvent({ type: 'ws_close' }); });
+  // Projection-relevant events: re-render the graph
+  const REFRESH_TYPES = ['complete', 'stage_change', 'error', 'worker_crash', 'retune_scheduled'];
+  REFRESH_TYPES.forEach(type => bus.subscribe(type, () => scheduleRefresh(800)));
+  // Event log only (no full refresh needed)
   ['complete','stage_change','error','worker_crash','retune_scheduled','progress'].forEach(type => {
     bus.subscribe(type, ev => pushEvent(ev));
   });
@@ -408,7 +423,12 @@ function init() {
   });
   resize();
   refresh();
-  setInterval(refresh, 30_000);
+  // Fallback poll: only fires when WS is disconnected (every 60 s).
+  // When the socket is live, WS events drive all updates instead.
+  setInterval(() => {
+    const wsLive = document.getElementById('ws-status')?.classList.contains('ws-live');
+    if (!wsLive) refresh();
+  }, 60_000);
   setInterval(() => pruneEvents(document.getElementById('events')), 60_000);
   subscribeTobus();
 }
