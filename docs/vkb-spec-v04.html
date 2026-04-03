@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vkb — Vector Knowledge Base · Specification v0.4</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;1,400&family=Literata:ital,wght@0,300;0,400;0,500;1,300;1,400&display=swap');
+
+:root {
+  --ink: #1a1917;
+  --muted: #5f5e5a;
+  --hint: #888780;
+  --line: rgba(26,25,23,0.12);
+  --line2: rgba(26,25,23,0.22);
+  --surf: #f4f2ec;
+  --card: #ffffff;
+  --page: #faf8f4;
+  --mono: 'IBM Plex Mono', monospace;
+  --serif: 'Literata', Georgia, serif;
+  --accent: #0F6E56;
+  --accent2: #534AB7;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e8e6df;
+    --muted: #9c9a92;
+    --hint: #6b6a65;
+    --line: rgba(232,230,223,0.1);
+    --line2: rgba(232,230,223,0.2);
+    --surf: #1e1d1b;
+    --card: #252421;
+    --page: #161513;
+    --accent: #5DCAA5;
+    --accent2: #AFA9EC;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: var(--serif);
+  font-size: 15px;
+  line-height: 1.8;
+  color: var(--ink);
+  background: var(--page);
+  padding: 0;
+}
+
+/* ── Layout ── */
+.page-wrap { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
+
+/* ── Sidebar ── */
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  border-right: 0.5px solid var(--line2);
+  padding: 2rem 0;
+  background: var(--surf);
+}
+.sidebar-brand {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  padding: 0 1.5rem 1.5rem;
+  border-bottom: 0.5px solid var(--line);
+  display: block;
+  text-decoration: none;
+}
+.sidebar-brand span { display: block; font-size: 10px; color: var(--hint); margin-top: 2px; font-weight: 400; letter-spacing: 0.04em; text-transform: none; }
+.nav-group { padding: 1rem 0; border-bottom: 0.5px solid var(--line); }
+.nav-group:last-child { border-bottom: none; }
+.nav-group-label { font-family: var(--mono); font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--hint); padding: 0 1.5rem 0.4rem; display: block; }
+.nav-link { display: block; font-family: var(--mono); font-size: 11px; color: var(--muted); padding: 4px 1.5rem; text-decoration: none; transition: color 0.15s; }
+.nav-link:hover { color: var(--ink); }
+.nav-link.active { color: var(--accent); }
+
+/* ── Main content ── */
+.main { padding: 3rem 4rem 6rem; max-width: 860px; }
+
+/* ── Doc header ── */
+.doc-header { margin-bottom: 3rem; padding-bottom: 2rem; border-bottom: 0.5px solid var(--line2); }
+.doc-eyebrow { font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--hint); margin-bottom: 0.75rem; }
+.doc-title { font-family: var(--serif); font-size: 32px; font-weight: 500; line-height: 1.15; margin-bottom: 0.5rem; }
+.doc-title em { font-style: italic; font-weight: 300; color: var(--muted); }
+.doc-sub { font-family: var(--serif); font-style: italic; font-weight: 300; font-size: 16px; color: var(--muted); line-height: 1.6; max-width: 600px; }
+.tag-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 1.25rem; }
+
+/* ── Pills ── */
+.pill { font-family: var(--mono); font-size: 10px; font-weight: 500; padding: 3px 10px; border-radius: 20px; letter-spacing: 0.03em; }
+.p-teal   { background: #E1F5EE; color: #085041; }
+.p-blue   { background: #E6F1FB; color: #0C447C; }
+.p-amber  { background: #FAEEDA; color: #633806; }
+.p-coral  { background: #FAECE7; color: #712B13; }
+.p-purple { background: #EEEDFE; color: #3C3489; }
+.p-gray   { background: #F1EFE8; color: #444441; }
+.p-green  { background: #EAF3DE; color: #27500A; }
+@media (prefers-color-scheme: dark) {
+  .p-teal   { background: #04342C; color: #9FE1CB; }
+  .p-blue   { background: #042C53; color: #B5D4F4; }
+  .p-amber  { background: #412402; color: #FAC775; }
+  .p-coral  { background: #4A1B0C; color: #F5C4B3; }
+  .p-purple { background: #26215C; color: #CECBF6; }
+  .p-gray   { background: #2C2C2A; color: #D3D1C7; }
+  .p-green  { background: #173404; color: #C0DD97; }
+}
+
+/* ── Sections ── */
+.section { margin-bottom: 3.5rem; scroll-margin-top: 2rem; }
+.sec-label { font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--hint); border-bottom: 0.5px solid var(--line); padding-bottom: 0.5rem; margin-bottom: 0.9rem; }
+.sec-title { font-size: 19px; font-weight: 500; margin-bottom: 0.6rem; line-height: 1.3; }
+.sec-sub { font-family: var(--serif); font-style: italic; font-weight: 300; font-size: 14px; color: var(--muted); margin-bottom: 1rem; }
+
+p { color: var(--muted); font-size: 14px; line-height: 1.85; margin-bottom: 0.65rem; }
+p strong { color: var(--ink); font-weight: 500; }
+code { font-family: var(--mono); font-size: 11.5px; background: var(--surf); padding: 1px 5px; border-radius: 4px; color: var(--accent2); }
+
+/* ── Schema ── */
+.schema-block { border: 0.5px solid var(--line2); border-radius: 10px; overflow: hidden; margin: 1rem 0; font-family: var(--mono); font-size: 12px; }
+.schema-head { display: flex; align-items: center; gap: 10px; padding: 9px 16px; background: var(--surf); border-bottom: 0.5px solid var(--line2); }
+.schema-name { font-weight: 500; font-size: 13px; color: var(--ink); }
+.schema-desc { font-size: 11px; color: var(--muted); flex: 1; }
+.schema-body { padding: 4px 0; background: var(--card); }
+.srow { display: grid; grid-template-columns: 40px 180px 120px 1fr; gap: 0 8px; padding: 5px 16px; align-items: baseline; }
+.srow:hover { background: var(--surf); }
+.badge { font-size: 9px; padding: 2px 5px; border-radius: 4px; text-align: center; font-weight: 500; letter-spacing: 0.03em; }
+.b-pk   { background: #FAEEDA; color: #633806; }
+.b-fk   { background: #E6F1FB; color: #0C447C; }
+.b-idx  { background: #E1F5EE; color: #085041; }
+.b-uq   { background: #EEEDFE; color: #3C3489; }
+.b-empty { color: transparent; font-size: 9px; }
+@media (prefers-color-scheme: dark) {
+  .b-pk  { background: #412402; color: #FAC775; }
+  .b-fk  { background: #042C53; color: #B5D4F4; }
+  .b-idx { background: #04342C; color: #9FE1CB; }
+  .b-uq  { background: #26215C; color: #CECBF6; }
+}
+.col-name { color: var(--ink); }
+.col-type { color: var(--accent2); }
+.col-note { color: var(--muted); font-size: 11px; }
+.sdivider { height: 0.5px; background: var(--line); margin: 4px 0; }
+
+/* ── Pipeline ── */
+.pipeline { margin: 1.25rem 0; }
+.pipe-row { display: flex; align-items: stretch; border: 0.5px solid var(--line2); border-radius: 10px; overflow: hidden; margin-bottom: 8px; background: var(--card); }
+.pipe-stage { min-width: 130px; padding: 13px 16px; background: var(--surf); border-right: 0.5px solid var(--line2); display: flex; flex-direction: column; justify-content: center; }
+.pipe-stage-name { font-family: var(--mono); font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.07em; color: var(--ink); }
+.pipe-stage-sub  { font-family: var(--mono); font-size: 10px; color: var(--hint); margin-top: 3px; }
+.pipe-body { padding: 13px 18px; flex: 1; }
+.pipe-body p { margin: 0 0 0.4rem; font-size: 13px; }
+.pipe-body p:last-child { margin-bottom: 0; }
+.pipe-tags { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 5px; }
+
+/* ── Decision grid ── */
+.decision-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 1rem 0; }
+.decision-card { border: 0.5px solid var(--line2); border-radius: 9px; padding: 13px 15px; background: var(--card); }
+.decision-label { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--hint); margin-bottom: 5px; }
+.decision-val { font-size: 13px; color: var(--ink); font-weight: 500; margin-bottom: 4px; }
+.decision-note { font-size: 12px; color: var(--muted); line-height: 1.55; }
+
+/* ── Tool grid ── */
+.tool-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin: 1rem 0; }
+.tool-card { border: 0.5px solid var(--line2); border-radius: 9px; padding: 13px 15px; background: var(--card); }
+.tool-name { font-family: var(--mono); font-size: 11px; font-weight: 500; color: var(--ink); margin-bottom: 4px; }
+.tool-sig  { font-family: var(--mono); font-size: 10px; color: var(--hint); margin-bottom: 6px; font-style: italic; line-height: 1.5; }
+.tool-desc { font-size: 12px; color: var(--muted); line-height: 1.6; }
+
+/* ── Adapter table ── */
+.atab { width: 100%; border-collapse: collapse; font-size: 13px; margin: 1rem 0; }
+.atab th { font-family: var(--mono); font-size: 9px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; color: var(--hint); padding: 7px 12px; border-bottom: 0.5px solid var(--line2); text-align: left; background: var(--surf); }
+.atab td { padding: 8px 12px; border-bottom: 0.5px solid var(--line); color: var(--muted); font-size: 12.5px; vertical-align: top; background: var(--card); }
+.atab td:first-child { font-family: var(--mono); font-size: 11px; color: var(--ink); }
+.atab tr:last-child td { border-bottom: none; }
+
+/* ── Config table ── */
+.cfg-table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+.cfg-table thead th { font-family: var(--mono); font-size: 9px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; color: var(--hint); padding: 7px 12px; border-bottom: 0.5px solid var(--line2); text-align: left; background: var(--surf); }
+.cfg-table td { padding: 6px 12px; border-bottom: 0.5px solid var(--line); vertical-align: top; background: var(--card); }
+.cfg-table tr:last-child td { border-bottom: none; }
+.cfg-key  { font-family: var(--mono); font-size: 11px; color: var(--ink); white-space: nowrap; }
+.cfg-def  { font-family: var(--mono); font-size: 11px; color: var(--accent2); white-space: nowrap; }
+.cfg-desc { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.cfg-group td { background: var(--surf) !important; font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--hint); padding: 8px 12px 4px; }
+
+/* ── Endpoints ── */
+.ep { display: flex; align-items: baseline; gap: 12px; padding: 7px 0; border-bottom: 0.5px solid var(--line); }
+.ep:last-child { border-bottom: none; }
+.method { font-family: var(--mono); font-size: 10px; font-weight: 500; padding: 2px 8px; border-radius: 4px; min-width: 46px; text-align: center; }
+.m-get  { background: #E1F5EE; color: #085041; }
+.m-post { background: #E6F1FB; color: #0C447C; }
+.m-del  { background: #FAECE7; color: #712B13; }
+.m-ws   { background: #EEEDFE; color: #3C3489; }
+@media (prefers-color-scheme: dark) {
+  .m-get  { background: #04342C; color: #9FE1CB; }
+  .m-post { background: #042C53; color: #B5D4F4; }
+  .m-del  { background: #4A1B0C; color: #F5C4B3; }
+  .m-ws   { background: #26215C; color: #CECBF6; }
+}
+.ep-path { font-family: var(--mono); font-size: 12px; color: var(--ink); min-width: 240px; }
+.ep-desc { font-size: 12.5px; color: var(--muted); }
+
+/* ── Callout ── */
+.callout { background: var(--surf); border: 0.5px solid var(--line2); border-radius: 9px; padding: 13px 16px; margin: 1.1rem 0; }
+.callout-label { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--hint); margin-bottom: 6px; }
+.callout p { font-size: 13px; margin: 0; color: var(--muted); line-height: 1.65; }
+.callout p + p { margin-top: 0.5rem; }
+.callout p strong { color: var(--ink); }
+
+/* ── Note ── */
+.note { border-left: 2px solid var(--line2); padding: 8px 14px; margin: 1rem 0; }
+.note p { color: var(--hint); font-size: 12.5px; font-style: italic; margin: 0; line-height: 1.65; }
+.note p strong { color: var(--muted); font-style: normal; }
+
+/* ── Proc map ── */
+.proc-map { border: 0.5px solid var(--line2); border-radius: 10px; overflow: hidden; margin: 1rem 0; }
+.proc-row { display: grid; grid-template-columns: 160px 1fr; }
+.proc-label { font-family: var(--mono); font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; padding: 12px 16px; background: var(--surf); border-bottom: 0.5px solid var(--line); border-right: 0.5px solid var(--line2); color: var(--ink); display: flex; align-items: flex-start; }
+.proc-detail { padding: 12px 16px; border-bottom: 0.5px solid var(--line); color: var(--muted); font-size: 12.5px; line-height: 1.65; background: var(--card); }
+.proc-row:last-child .proc-label,
+.proc-row:last-child .proc-detail { border-bottom: none; }
+
+/* ── Assumption rows ── */
+.assumption { display: flex; gap: 14px; padding: 9px 0; border-bottom: 0.5px solid var(--line); }
+.assumption:last-child { border-bottom: none; }
+.a-num { font-family: var(--mono); font-size: 10px; color: var(--hint); min-width: 24px; padding-top: 2px; }
+.a-text { font-size: 13px; color: var(--muted); line-height: 1.65; }
+.a-text strong { color: var(--ink); font-weight: 500; }
+
+/* ── Two col ── */
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+/* ── File layout box ── */
+.file-box { border: 0.5px solid var(--line2); border-radius: 9px; overflow: hidden; margin: 1rem 0; }
+.file-box-head { font-family: var(--mono); font-size: 11px; font-weight: 500; color: var(--ink); padding: 9px 16px; background: var(--surf); border-bottom: 0.5px solid var(--line2); }
+.file-box-body { background: var(--card); padding: 14px 16px; font-family: var(--mono); font-size: 12px; line-height: 1.7; color: var(--muted); white-space: pre; }
+.file-box-body .fm-key { color: var(--accent); }
+.file-box-body .fm-val { color: var(--ink); }
+.file-box-body .fm-comment { color: var(--hint); }
+
+/* ── Summary tree visual ── */
+.tree-level { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.tree-level-label { font-family: var(--mono); font-size: 10px; color: var(--hint); min-width: 24px; }
+.tree-nodes { display: flex; gap: 8px; flex: 1; }
+.tree-node { border-radius: 7px; padding: 8px 12px; font-size: 12px; font-family: var(--mono); border: 0.5px solid; flex: 1; text-align: center; }
+.tn-teal   { background: #E1F5EE; color: #085041; border-color: #0F6E56; }
+.tn-purple { background: #EEEDFE; color: #3C3489; border-color: #534AB7; }
+.tn-amber  { background: #FAEEDA; color: #633806; border-color: #854F0B; }
+.tn-gray   { background: #F1EFE8; color: #444441; border-color: #5F5E5A; border-style: dashed; }
+@media (prefers-color-scheme: dark) {
+  .tn-teal   { background: #04342C; color: #9FE1CB; border-color: #1D9E75; }
+  .tn-purple { background: #26215C; color: #CECBF6; border-color: #7F77DD; }
+  .tn-amber  { background: #412402; color: #FAC775; border-color: #BA7517; }
+  .tn-gray   { background: #2C2C2A; color: #D3D1C7; border-color: #5F5E5A; }
+}
+.tree-connector { font-family: var(--mono); font-size: 10px; color: var(--hint); padding-left: 26px; margin-bottom: 4px; }
+.tree-store-tag { font-family: var(--mono); font-size: 10px; min-width: 130px; color: var(--hint); text-align: right; }
+
+@media print {
+  .sidebar { display: none; }
+  .page-wrap { grid-template-columns: 1fr; }
+  .main { padding: 2rem; }
+}
+</style>
+</head>
+<body>
+<div class="page-wrap">
+
+<!-- Sidebar -->
+<nav class="sidebar">
+  <a class="sidebar-brand" href="#">vkb <span>Specification v0.4 · Final</span></a>
+  <div class="nav-group">
+    <span class="nav-group-label">Overview</span>
+    <a class="nav-link" href="#s01">01 · Philosophy</a>
+    <a class="nav-link" href="#s02">02 · Relation model</a>
+    <a class="nav-link" href="#s03">03 · Summarisation tree</a>
+  </div>
+  <div class="nav-group">
+    <span class="nav-group-label">Data</span>
+    <a class="nav-link" href="#s04">04 · Data model</a>
+    <a class="nav-link" href="#s05">05 · RawStore layout</a>
+  </div>
+  <div class="nav-group">
+    <span class="nav-group-label">Runtime</span>
+    <a class="nav-link" href="#s06">06 · Process architecture</a>
+    <a class="nav-link" href="#s07">07 · Ingest pipeline</a>
+    <a class="nav-link" href="#s08">08 · Query + lazy materialisation</a>
+    <a class="nav-link" href="#s09">09 · Retune sweep</a>
+  </div>
+  <div class="nav-group">
+    <span class="nav-group-label">Interfaces</span>
+    <a class="nav-link" href="#s10">10 · Adapter layer</a>
+    <a class="nav-link" href="#s11">11 · MCP tools</a>
+    <a class="nav-link" href="#s12">12 · HTTP + WebSocket</a>
+  </div>
+  <div class="nav-group">
+    <span class="nav-group-label">Reference</span>
+    <a class="nav-link" href="#s13">13 · Configuration</a>
+    <a class="nav-link" href="#s14">14 · Open decisions</a>
+    <a class="nav-link" href="#s15">15 · Out of scope</a>
+    <a class="nav-link" href="#s16">16 · DB resilience</a>
+  </div>
+</nav>
+
+<!-- Main -->
+<main class="main">
+
+<!-- Header -->
+<div class="doc-header">
+  <div class="doc-eyebrow">Technical Specification · v0.4</div>
+  <div class="doc-title">vkb <em>— Vector Knowledge Base</em></div>
+  <div class="doc-sub">A self-contained, local-first semantic memory system. Raw text in, self-organising knowledge graph out. Fully managed — clients are naive. Postgres + pgvector, Ollama, child process workers, hierarchical summarisation, lazy-persistent relation graph.</div>
+  <div class="tag-row">
+    <span class="pill p-teal">Postgres + pgvector</span>
+    <span class="pill p-purple">Ollama local</span>
+    <span class="pill p-blue">MCP server</span>
+    <span class="pill p-amber">lazy-persistent graph</span>
+    <span class="pill p-coral">child_process workers</span>
+    <span class="pill p-green">summarisation tree</span>
+    <span class="pill p-gray">TypeScript · Node.js</span>
+  </div>
+</div>
+
+<!-- 01 Philosophy -->
+<div class="section" id="s01">
+  <div class="sec-label">01 · Design Philosophy</div>
+  <div class="sec-title">The system is the expert. Clients submit text and ask questions.</div>
+  <div class="sec-sub">Every design decision flows from one principle: no preprocessing burden on the caller.</div>
+
+  <p>vkb is a <strong>closed-loop semantic memory system</strong>. A caller submits raw text, a URL, or a file path and receives a job id within one round-trip. Everything else — fetch, normalise, chunk, embed, summarise, section, extract relations, infer semantic proximity, build and prune the knowledge graph — is managed entirely by vkb in background workers.</p>
+  <p>The <strong>relation graph is the primary value</strong>. It is not computed once at ingest. It grows and self-corrects over time through two mechanisms: content-identified extraction at ingest time, and lazy materialisation at query time. Edges that are repeatedly rediscovered are reinforced; edges that decay in relevance are pruned by the scheduled retune sweep.</p>
+  <p>The system is <strong>local-first by design</strong>. Zero cloud dependencies in the default configuration. Ollama on localhost provides both embedding and LLM capability. Postgres + pgvector is the only infrastructure dependency. Everything runs on a developer laptop or a small VPS.</p>
+
+  <div class="decision-grid">
+    <div class="decision-card">
+      <div class="decision-label">Vector store</div>
+      <div class="decision-val">Postgres + pgvector</div>
+      <div class="decision-note">Exact cosine scan below 1 000 chunks; auto-switches to <code>ivfflat</code> ANN index above threshold. One DB for all state — no separate queue, no Redis, no SQS.</div>
+    </div>
+    <div class="decision-card">
+      <div class="decision-label">Embedding + LLM</div>
+      <div class="decision-val">Ollama via localhost HTTP</div>
+      <div class="decision-note">Single <code>EmbedAdapter</code> and <code>LLMAdapter</code> interface. Default models configurable. Swappable to any provider without changing pipeline code.</div>
+    </div>
+    <div class="decision-card">
+      <div class="decision-label">Background workers</div>
+      <div class="decision-val">Node.js child_process</div>
+      <div class="decision-note">True process isolation. Worker crash does not affect MCP server. Job state is in Postgres — workers are stateless and replaceable. Postgres is the queue.</div>
+    </div>
+    <div class="decision-card">
+      <div class="decision-label">Text storage</div>
+      <div class="decision-val">RawStore (filesystem default)</div>
+      <div class="decision-note">Postgres holds no raw text or chunk text. All text is in the RawStore. Postgres is a pure index: vectors, UUIDs, summaries, weights, relations, metadata.</div>
+    </div>
+    <div class="decision-card">
+      <div class="decision-label">Relation graph</div>
+      <div class="decision-val">Content-extracted + lazy-persistent</div>
+      <div class="decision-note">Relations arise from two sources only: ingest-time extraction (heuristic + optional LLM), and query-time lazy materialisation. No eager O(n²) corpus scan ever.</div>
+    </div>
+    <div class="decision-card">
+      <div class="decision-label">Summarisation</div>
+      <div class="decision-val">Hierarchical tree (RAPTOR-pattern)</div>
+      <div class="decision-note">Four levels: entity → section → chunk → raw file. Query results served from summaries. Raw file fetched only on explicit caller request. Zero file I/O in the query hot path.</div>
+    </div>
+  </div>
+</div>
+
+<!-- 02 Relation Model -->
+<div class="section" id="s02">
+  <div class="sec-label">02 · Relation Model</div>
+  <div class="sec-title">Three origins. One table. Confidence + TTL.</div>
+  <div class="sec-sub">Relations are never computed eagerly across the full corpus.</div>
+
+  <p>Every edge in the knowledge graph carries an <code>origin</code> tag that determines its lifecycle. The three origins are mutually exclusive and have different pruning rules.</p>
+
+  <div class="pipeline">
+    <div class="pipe-row">
+      <div class="pipe-stage">
+        <div class="pipe-stage-name">Content</div>
+        <div class="pipe-stage-sub">ingest-time</div>
+      </div>
+      <div class="pipe-body">
+        <p><strong>Heuristic pass (always runs):</strong> URL and path pattern matching against known <code>entity.ref</code> values, shared identifiers, explicit citation patterns detected via regex and structural parsing. Fast, zero LLM calls. Assigns <code>confidence: 1.0</code> — these are factual links. Never pruned by retune.</p>
+        <p><strong>LLM extraction pass (configurable, default on):</strong> After summarisation, the LLM is prompted with the new entity summary and a shortlisted set of candidate entity summaries (pre-filtered by pgvector similarity to avoid sending the full corpus). It identifies which entities this one references, depends on, or conceptually relates to. Assigns <code>confidence</code> from model certainty signal. Never pruned by retune.</p>
+        <div class="pipe-tags"><span class="pill p-green">origin: content_heuristic</span><span class="pill p-teal">origin: content_llm</span><span class="pill p-gray">never pruned</span></div>
+      </div>
+    </div>
+    <div class="pipe-row">
+      <div class="pipe-stage">
+        <div class="pipe-stage-name">Semantic</div>
+        <div class="pipe-stage-sub">query-time</div>
+      </div>
+      <div class="pipe-body">
+        <p><strong>Lazy materialisation:</strong> When a query returns results, returned chunks are evaluated pairwise by cosine similarity using embeddings already in memory from the pgvector result. Pairs above <code>RELATION_THRESHOLD</code> are written to the relation table. If the edge exists, <code>last_seen_at</code> is updated and <code>confidence</code> is reinforced by <code>RELATION_CONFIDENCE_STEP</code>, capped at 1.0. If it does not exist, it is written with initial confidence equal to the cosine similarity score.</p>
+        <p><strong>Top-K cap per chunk</strong> enforced on upsert — lowest-confidence edges evicted when cap exceeded. Prevents edge explosion as corpus scales.</p>
+        <div class="pipe-tags"><span class="pill p-purple">origin: semantic</span><span class="pill p-amber">lazy write</span><span class="pill p-amber">confidence reinforcement</span><span class="pill p-amber">TTL prunable</span></div>
+      </div>
+    </div>
+    <div class="pipe-row">
+      <div class="pipe-stage">
+        <div class="pipe-stage-name">Asserted</div>
+        <div class="pipe-stage-sub">caller-explicit</div>
+      </div>
+      <div class="pipe-body">
+        <p><strong>Via <code>vkb_relate</code> tool:</strong> Caller explicitly asserts an edge between any two entity or chunk IDs with a caller-defined <code>rel_type</code>. Assigned <code>confidence: 1.0</code>. Weight defaults to cosine similarity of current embeddings if not supplied. Never pruned by retune — asserted edges are permanent until explicitly deleted.</p>
+        <div class="pipe-tags"><span class="pill p-coral">origin: asserted</span><span class="pill p-coral">never pruned</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout">
+    <div class="callout-label">Retune pruning rule</div>
+    <p>Semantic relations with <code>last_seen_at</code> older than <code>RELATION_TTL_DAYS</code> (default 30) AND <code>confidence</code> below <code>RELATION_PRUNE_THRESHOLD</code> (default 0.6) are deleted in the retune sweep. Relations with <code>origin: content_heuristic</code>, <code>content_llm</code>, or <code>asserted</code> are never touched. The graph self-prunes speculative edges while preserving factual and user-asserted structure.</p>
+  </div>
+
+  <div class="note"><p><strong>On lazy materialisation write failure:</strong> the upsert runs as a <code>setImmediate</code> callback — fire-and-forget from the query path. If it fails, it is silently dropped. The graph is eventually consistent. The next query covering the same chunks will rediscover and rewrite the edge.</p></div>
+</div>
+
+<!-- 03 Summarisation Tree -->
+<div class="section" id="s03">
+  <div class="sec-label">03 · Summarisation Tree</div>
+  <div class="sec-title">Four levels of fidelity. Raw file is the floor.</div>
+  <div class="sec-sub">Inspired by the RAPTOR pattern — recursive abstractive summarisation with a configurable section strategy.</div>
+
+  <p>vkb maintains a <strong>hierarchical summarisation tree</strong> per entity. Query results are served from the appropriate level of the tree — no file I/O required for the hot path. The raw entity file is fetched only when a caller explicitly requests source content or triggers re-ingest.</p>
+
+  <div style="margin: 1.25rem 0;">
+    <div class="tree-level">
+      <div class="tree-level-label">L3</div>
+      <div class="tree-nodes"><div class="tree-node tn-teal">Entity summary — whole document, LLM-generated</div></div>
+      <div class="tree-store-tag">Postgres · entity.summary</div>
+    </div>
+    <div class="tree-connector">↓ &nbsp;clustered into sections by SectionAdapter</div>
+    <div class="tree-level">
+      <div class="tree-level-label">L2</div>
+      <div class="tree-nodes">
+        <div class="tree-node tn-purple">Section A summary</div>
+        <div class="tree-node tn-purple">Section B summary</div>
+        <div class="tree-node tn-purple">Section C summary</div>
+      </div>
+      <div class="tree-store-tag">Postgres · section_summary</div>
+    </div>
+    <div class="tree-connector">↓ &nbsp;chunked by ChunkAdapter</div>
+    <div class="tree-level">
+      <div class="tree-level-label">L1</div>
+      <div class="tree-nodes">
+        <div class="tree-node tn-amber">Chunk 1</div>
+        <div class="tree-node tn-amber">Chunk 2</div>
+        <div class="tree-node tn-amber">Chunk 3</div>
+        <div class="tree-node tn-amber">Chunk 4</div>
+        <div class="tree-node tn-amber">Chunk 5</div>
+      </div>
+      <div class="tree-store-tag">Postgres · chunk.summary</div>
+    </div>
+    <div class="tree-connector">↓ &nbsp;on explicit request or re-ingest only</div>
+    <div class="tree-level">
+      <div class="tree-level-label">L0</div>
+      <div class="tree-nodes"><div class="tree-node tn-gray">Raw entity file — normalised text + frontmatter metadata</div></div>
+      <div class="tree-store-tag">RawStore · filesystem</div>
+    </div>
+  </div>
+
+  <p><strong>Section strategy is configurable</strong> via <code>SECTION_STRATEGY</code>. Two implementations ship with vkb; both satisfy the same <code>SectionAdapter</code> interface, so custom strategies can be registered without modifying pipeline code.</p>
+
+  <div class="callout">
+    <div class="callout-label">PositionalSectionAdapter</div>
+    <p>Groups chunks into fixed windows of <code>SECTION_WINDOW_SIZE</code> (default 5). Zero LLM calls. Fully deterministic and reproducible. Appropriate for structured documents with predictable section boundaries: legal docs, reports, technical specifications, code files.</p>
+  </div>
+
+  <div class="callout">
+    <div class="callout-label">SimilarityValleySectionAdapter (default)</div>
+    <p>Computes cosine similarity between each pair of adjacent chunks using embeddings already produced in stage 4 — no additional embedding calls. Cuts a section boundary wherever similarity drops below <code>SECTION_SPLIT_THRESHOLD</code> (default 0.65). This is 1D segmentation along the sequential axis: finding valleys in the inter-chunk similarity signal. Semantically coherent passages group together regardless of their position within the document. <code>SECTION_MAX_SIZE</code> (default 8) caps maximum chunks per section, preventing a uniformly high-similarity document from producing one giant section with an oversized summarisation call.</p>
+  </div>
+
+  <div class="note"><p><strong>Query fidelity selector:</strong> <code>vkb_query</code> returns chunk summaries (L1) by default. Callers can request section summaries (<code>include_sections: true</code>) for broader context. The entity summary (L3) is always included in results. A <code>raw_ref</code> field is returned with every result — callers use this to request the raw file via <code>vkb_raw</code> if full source text is needed. The system never automatically escalates to L0.</p></div>
+</div>
+
+<!-- 04 Data Model -->
+<div class="section" id="s04">
+  <div class="sec-label">04 · Data Model</div>
+  <div class="sec-title">Six tables. Postgres only. No text blobs — Postgres is a pure index.</div>
+
+  <!-- entity -->
+  <div class="schema-block">
+    <div class="schema-head"><span class="schema-name">entity</span><span class="schema-desc">top-level submission unit — one per ingest call</span><span class="pill p-teal">anchor</span></div>
+    <div class="schema-body">
+      <div class="srow"><span class="badge b-pk">PK</span><span class="col-name">id</span><span class="col-type">uuid</span><span class="col-note">gen_random_uuid()</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">type</span><span class="col-type">text</span><span class="col-note">caller-defined label: "doc", "url", "note", "code", etc.</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">ref</span><span class="col-type">text</span><span class="col-note">original source locator: URL, file path, or identifier; nullable</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">raw_store_key</span><span class="col-type">text</span><span class="col-note">RawStore path/key for the normalised entity file; used for re-ingest and explicit raw fetch</span></div>
+      <div class="srow"><span class="badge b-idx">IDX</span><span class="col-name">summary</span><span class="col-type">text</span><span class="col-note">L3 — LLM-generated whole-document summary; FTS indexed via tsvector generated column</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">summary_version</span><span class="col-type">int</span><span class="col-note">default 0; increments on each regeneration</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">meta</span><span class="col-type">jsonb</span><span class="col-note">caller-supplied key/value bag; queryable via Postgres jsonb operators</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">status</span><span class="col-type">text</span><span class="col-note">pending | processing | ready | error</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">created_at</span><span class="col-type">timestamptz</span><span class="col-note">UTC</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">updated_at</span><span class="col-type">timestamptz</span><span class="col-note">touches on any pipeline stage completion</span></div>
+    </div>
+  </div>
+
+  <!-- chunk -->
+  <div class="schema-block">
+    <div class="schema-head"><span class="schema-name">chunk</span><span class="schema-desc">atomic unit of embedding and retrieval — no text stored in Postgres</span><span class="pill p-purple">vector unit</span></div>
+    <div class="schema-body">
+      <div class="srow"><span class="badge b-pk">PK</span><span class="col-name">id</span><span class="col-type">uuid</span><span class="col-note"></span></div>
+      <div class="srow"><span class="badge b-fk">FK</span><span class="col-name">entity_id</span><span class="col-type">uuid</span><span class="col-note">→ entity.id ON DELETE CASCADE</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">seq</span><span class="col-type">int</span><span class="col-note">position within entity; 0-indexed; used to reconstruct reading order</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">raw_store_key</span><span class="col-type">text</span><span class="col-note">RawStore key for this chunk's text; fetched only on explicit request</span></div>
+      <div class="srow"><span class="badge b-idx">IDX</span><span class="col-name">summary</span><span class="col-type">text</span><span class="col-note">L1 — 1–2 sentence LLM-generated summary; stored in Postgres; serves query results</span></div>
+      <div class="srow"><span class="badge b-idx">IDX</span><span class="col-name">embedding</span><span class="col-type">vector(N)</span><span class="col-note">pgvector column; N = EMBED_DIM config; ivfflat indexed above IVFFLAT_THRESHOLD</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">embed_model</span><span class="col-type">text</span><span class="col-note">model tag; used to detect stale embeddings on model change at startup</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">embed_version</span><span class="col-type">int</span><span class="col-note">increments on re-embed; single current vector retained</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">embedded_at</span><span class="col-type">timestamptz</span><span class="col-note">used by retune cursor to find stale embeddings</span></div>
+    </div>
+  </div>
+
+  <!-- section_summary -->
+  <div class="schema-block">
+    <div class="schema-head"><span class="schema-name">section_summary</span><span class="schema-desc">L2 — cluster summaries; bridge between entity and chunk level</span><span class="pill p-purple">summarisation tree</span></div>
+    <div class="schema-body">
+      <div class="srow"><span class="badge b-pk">PK</span><span class="col-name">id</span><span class="col-type">uuid</span><span class="col-note"></span></div>
+      <div class="srow"><span class="badge b-fk">FK</span><span class="col-name">entity_id</span><span class="col-type">uuid</span><span class="col-note">→ entity.id ON DELETE CASCADE</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">chunk_ids</span><span class="col-type">uuid[]</span><span class="col-note">ordered array of chunk.id values comprising this section</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">seq</span><span class="col-type">int</span><span class="col-note">section position within entity; 0-indexed</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">summary</span><span class="col-type">text</span><span class="col-note">LLM-generated summary of the section's chunk cluster</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">strategy</span><span class="col-type">text</span><span class="col-note">positional | similarity_valley — records which strategy produced this section</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">created_at</span><span class="col-type">timestamptz</span><span class="col-note"></span></div>
+    </div>
+  </div>
+
+  <!-- relation -->
+  <div class="schema-block">
+    <div class="schema-head"><span class="schema-name">relation</span><span class="schema-desc">chunk ↔ chunk or entity ↔ entity; all origins unified; confidence + TTL</span><span class="pill p-amber">knowledge graph</span></div>
+    <div class="schema-body">
+      <div class="srow"><span class="badge b-pk">PK</span><span class="col-name">id</span><span class="col-type">uuid</span><span class="col-note"></span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">source_id</span><span class="col-type">uuid</span><span class="col-note">chunk.id or entity.id; enforced at application layer</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">target_id</span><span class="col-type">uuid</span><span class="col-note">chunk.id or entity.id</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">source_kind</span><span class="col-type">text</span><span class="col-note">chunk | entity</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">target_kind</span><span class="col-type">text</span><span class="col-note">chunk | entity</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">rel_type</span><span class="col-type">text</span><span class="col-note">sequential | semantic | references | mentions | asserted | caller-defined</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">origin</span><span class="col-type">text</span><span class="col-note">content_heuristic | content_llm | semantic | asserted</span></div>
+      <div class="srow"><span class="badge b-idx">IDX</span><span class="col-name">weight</span><span class="col-type">float4</span><span class="col-note">0–1; cosine sim for semantic; 1.0 for heuristic/asserted; LLM certainty for content_llm</span></div>
+      <div class="srow"><span class="badge b-idx">IDX</span><span class="col-name">confidence</span><span class="col-type">float4</span><span class="col-note">0–1; reinforced on query rediscovery; basis for TTL prune decision</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">last_seen_at</span><span class="col-type">timestamptz</span><span class="col-note">updated on every query-time rediscovery; drives TTL prune</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">created_at</span><span class="col-type">timestamptz</span><span class="col-note"></span></div>
+      <div class="sdivider"></div>
+      <div class="srow"><span class="badge b-uq">UQ</span><span class="col-name">(source_id, target_id, rel_type)</span><span class="col-type"></span><span class="col-note">prevents duplicate edges; semantic relations upsert on rediscovery</span></div>
+    </div>
+  </div>
+
+  <!-- job -->
+  <div class="schema-block">
+    <div class="schema-head"><span class="schema-name">job</span><span class="schema-desc">pipeline job tracking — persisted in Postgres; TTL cleaned by retune sweep</span><span class="pill p-gray">operational</span></div>
+    <div class="schema-body">
+      <div class="srow"><span class="badge b-pk">PK</span><span class="col-name">id</span><span class="col-type">uuid</span><span class="col-note">returned to caller on submission</span></div>
+      <div class="srow"><span class="badge b-fk">FK</span><span class="col-name">entity_id</span><span class="col-type">uuid</span><span class="col-note">→ entity.id; nullable until entity row written</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">kind</span><span class="col-type">text</span><span class="col-note">ingest | retune</span></div>
+      <div class="srow"><span class="badge b-idx">IDX</span><span class="col-name">stage</span><span class="col-type">text</span><span class="col-note">queued | fetching | chunking | embedding | sectioning | summarising | extracting | done | error</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">progress</span><span class="col-type">jsonb</span><span class="col-note">{ chunks_total, chunks_done, sections_done, relations_added, retry_count, error_detail }</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">worker_pid</span><span class="col-type">int</span><span class="col-note">child process PID; coordinator uses this for crash detection</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">created_at</span><span class="col-type">timestamptz</span><span class="col-note"></span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">completed_at</span><span class="col-type">timestamptz</span><span class="col-note">nullable; set on done or error</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">expires_at</span><span class="col-type">timestamptz</span><span class="col-note">created_at + JOB_TTL_DAYS; cleaned by retune sweep</span></div>
+    </div>
+  </div>
+
+  <!-- config_state -->
+  <div class="schema-block">
+    <div class="schema-head"><span class="schema-name">config_state</span><span class="schema-desc">runtime config snapshot — detects model and chunk config drift on startup</span><span class="pill p-gray">operational</span></div>
+    <div class="schema-body">
+      <div class="srow"><span class="badge b-pk">PK</span><span class="col-name">key</span><span class="col-type">text</span><span class="col-note">e.g. "embed_model", "embed_dim", "chunk_size", "section_strategy"</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">value</span><span class="col-type">text</span><span class="col-note">current value; compared against running config on startup</span></div>
+      <div class="srow"><span class="badge b-empty">—</span><span class="col-name">updated_at</span><span class="col-type">timestamptz</span><span class="col-note">records when this config key last changed; used as retune cursor anchor</span></div>
+    </div>
+  </div>
+
+  <div class="note"><p><strong>Startup drift detection:</strong> vkb compares all running config values against <code>config_state</code> rows on boot. If <code>embed_model</code> or <code>embed_dim</code> changed, chunks with the old <code>embed_model</code> tag are queued for re-embedding. If <code>chunk_size</code> or <code>section_strategy</code> changed, entities are queued for full re-chunk + re-section + re-embed. Drift detection is loud: a startup log entry lists affected entity and chunk counts before workers begin. Silent dimension mismatch in the vector column is prevented by construction.</p></div>
+</div>
+
+<!-- 05 RawStore -->
+<div class="section" id="s05">
+  <div class="sec-label">05 · RawStore Layout</div>
+  <div class="sec-title">One entity file + one chunks file per entity. Self-describing. Re-ingestable.</div>
+  <div class="sec-sub">The RawStore adapter defaults to local filesystem. Swappable to S3-compatible object storage via config.</div>
+
+  <p>Each ingested entity produces two files in the RawStore, sharded into a two-level directory structure by entity ID prefix to keep directory sizes bounded at scale.</p>
+
+  <div class="file-box">
+    <div class="file-box-head">Directory layout — {RAWSTORE_PATH}/{id[0..1]}/{id[2..3]}/{id}/</div>
+    <div class="file-box-body"><span class="fm-comment"># Two files per entity, named by entity UUID</span>
+{id}/entity.md          <span class="fm-comment"># Normalised text with YAML frontmatter</span>
+{id}/chunks.ndjson      <span class="fm-comment"># One chunk JSON object per line, ordered by seq</span></div>
+  </div>
+
+  <div class="file-box">
+    <div class="file-box-head">entity.md — YAML frontmatter + normalised body</div>
+    <div class="file-box-body"><span class="fm-key">---</span>
+<span class="fm-key">vkb_version:</span>     <span class="fm-val">"0.4"</span>
+<span class="fm_key">entity_id:</span>       <span class="fm-val">"550e8400-e29b-41d4-a716-446655440000"</span>
+<span class="fm-key">type:</span>            <span class="fm-val">"url"</span>
+<span class="fm-key">ref:</span>             <span class="fm-val">"https://example.com/article"</span>
+<span class="fm-key">ingested_at:</span>     <span class="fm-val">"2025-03-27T04:00:00Z"</span>
+<span class="fm-key">normalisation:</span>
+  <span class="fm-key">strategy:</span>      <span class="fm-val">"readability"</span>
+  <span class="fm-key">language:</span>      <span class="fm-val">"en"</span>
+  <span class="fm-key">stripped:</span>      <span class="fm-val">["boilerplate", "nav", "ads"]</span>
+<span class="fm-key">chunk_config:</span>
+  <span class="fm-key">strategy:</span>      <span class="fm-val">"sliding_window"</span>
+  <span class="fm-key">size:</span>          <span class="fm-val">512</span>
+  <span class="fm-key">overlap:</span>       <span class="fm-val">64</span>
+<span class="fm-key">section_config:</span>
+  <span class="fm-key">strategy:</span>      <span class="fm-val">"similarity_valley"</span>
+  <span class="fm-key">threshold:</span>     <span class="fm-val">0.65</span>
+  <span class="fm-key">max_size:</span>      <span class="fm-val">8</span>
+<span class="fm-key">embed_model:</span>     <span class="fm-val">"nomic-embed-text"</span>
+<span class="fm-key">meta:</span>            <span class="fm-val">{ "author": "Jane Smith", "tags": ["ai", "research"] }</span>
+<span class="fm-key">---</span>
+
+<span class="fm-comment"># Normalised body text follows the frontmatter delimiter</span>
+The full normalised text of the entity begins here and continues
+to end of file. No truncation. This is the source of truth for
+re-ingest, re-chunk, and explicit raw fetch requests.</div>
+  </div>
+
+  <div class="file-box">
+    <div class="file-box-head">chunks.ndjson — one JSON object per line, ordered by seq</div>
+    <div class="file-box-body">{"chunk_id":"uuid-1","entity_id":"uuid-0","seq":0,"text":"First chunk text..."}
+{"chunk_id":"uuid-2","entity_id":"uuid-0","seq":1,"text":"Second chunk text..."}
+{"chunk_id":"uuid-3","entity_id":"uuid-0","seq":2,"text":"Third chunk text..."}</div>
+  </div>
+
+  <div class="note"><p><strong>Re-ingest from RawStore:</strong> The <code>entity.md</code> frontmatter contains all config used at original ingest time. A re-ingest worker reads this file and can detect when current config differs from the recorded config, deciding whether to re-chunk (chunk_config differs), re-section (section_config differs), or re-embed only (embed_model differs). No DB lookup required — the file is self-sufficient.</p></div>
+
+  <div class="callout">
+    <div class="callout-label">RawStore interface</div>
+    <p><code>write(key: string, content: string): Promise&lt;void&gt;</code> — write a file to the store.</p>
+    <p><code>read(key: string): Promise&lt;string&gt;</code> — read a file from the store.</p>
+    <p><code>delete(key: string): Promise&lt;void&gt;</code> — delete a file (called on entity delete).</p>
+    <p><code>exists(key: string): Promise&lt;boolean&gt;</code> — check before re-ingest.</p>
+    <p>Default implementation: <code>FilesystemRawStore</code> — reads/writes to <code>RAWSTORE_PATH</code> on local disk. Alternative: <code>S3RawStore</code> — reads/writes to an S3-compatible bucket via <code>RAWSTORE_S3_BUCKET</code> and <code>RAWSTORE_S3_ENDPOINT</code>.</p>
+  </div>
+</div>
+
+<!-- 06 Process Architecture -->
+<div class="section" id="s06">
+  <div class="sec-label">06 · Process Architecture</div>
+  <div class="sec-title">One coordinator. N ingest workers. One retune worker. Postgres as the queue.</div>
+
+  <p>The main process runs the MCP server and the observability HTTP server. It never executes pipeline work directly. It spawns and monitors a pool of child processes. Workers poll the <code>job</code> table for queued work using <code>SELECT FOR UPDATE SKIP LOCKED</code> — Postgres is the queue. No external queue dependency of any kind.</p>
+
+  <div class="proc-map">
+    <div class="proc-row">
+      <div class="proc-label">Main process</div>
+      <div class="proc-detail">MCP server (port <code>MCP_PORT</code> or stdio) + observability HTTP server (port <code>OBS_PORT</code>). Handles all client-facing I/O. On <code>vkb_ingest</code>: writes entity row (status: pending) and job row (stage: queued) to Postgres, returns <code>{ job_id, entity_id }</code>. Spawns worker pool on startup. Monitors worker PIDs via heartbeat. Forwards worker IPC events to WebSocket clients. Never calls Ollama.</div>
+    </div>
+    <div class="proc-row">
+      <div class="proc-label">Ingest pool</div>
+      <div class="proc-detail"><code>WORKER_CONCURRENCY</code> child processes (default 2). Each worker loops: <code>SELECT FOR UPDATE SKIP LOCKED</code> on job WHERE kind = 'ingest' AND stage = 'queued'. Claims one job, writes <code>worker_pid</code>, runs the full 9-stage ingest pipeline for that job, updating <code>job.stage</code> and <code>job.progress</code> at each transition. On completion sets entity.status → ready and job.stage → done. On uncaught error: sets job.stage → error, increments retry_count. Process then loops to claim the next job.</div>
+    </div>
+    <div class="proc-row">
+      <div class="proc-label">Crash recovery</div>
+      <div class="proc-detail">Coordinator runs a heartbeat check every 30 seconds. Any job with stage NOT IN ('done', 'error') whose <code>worker_pid</code> is no longer alive (checked via <code>process.kill(pid, 0)</code>) is reset to stage: queued and worker_pid: null for re-claim. Jobs exceeding <code>INGEST_MAX_RETRIES</code> (checked via progress.retry_count) are moved to stage: error and not re-queued.</div>
+    </div>
+    <div class="proc-row">
+      <div class="proc-label">Retune worker</div>
+      <div class="proc-detail">A dedicated child process, separate from the ingest pool. Spawned on schedule (<code>RETUNE_INTERVAL_HOURS</code>) or on manual trigger via <code>vkb_retune</code> tool / POST /retune. Claims its own job row of kind: retune via <code>SELECT FOR UPDATE</code> — only one retune job runs at a time, enforced by this lock. Performs the retune sweep stages in sequence. Writes stage progress to its job row throughout.</div>
+    </div>
+    <div class="proc-row">
+      <div class="proc-label">IPC</div>
+      <div class="proc-detail">Workers emit progress events to the coordinator via Node.js <code>process.send()</code> — structured JSON messages with event type, job_id, stage, and payload. Coordinator receives via <code>worker.on('message')</code> and fans out to WebSocket clients. No shared memory. All durable state goes through Postgres. IPC is best-effort: if the coordinator restarts, progress events from in-flight workers resume on reconnect.</div>
+    </div>
+    <div class="proc-row">
+      <div class="proc-label">Lazy relation write</div>
+      <div class="proc-detail">The semantic relation upsert triggered by query results runs in the main process as a <code>setImmediate</code> callback — after the query response has been sent. It is a direct Postgres write, not dispatched to a worker. Fire-and-forget: a failure is logged and dropped. The graph is eventually consistent with respect to query-materialised edges.</div>
+    </div>
+    <div class="proc-row">
+      <div class="proc-label">Job TTL</div>
+      <div class="proc-detail">Completed jobs (stage: done or error) with <code>expires_at &lt; NOW()</code> are deleted during each retune sweep as the final step. Default TTL: 7 days (<code>JOB_TTL_DAYS</code>). Keeps the job table bounded without a separate cron or maintenance task.</div>
+    </div>
+  </div>
+</div>
+
+<!-- 07 Ingest Pipeline -->
+<div class="section" id="s07">
+  <div class="sec-label">07 · Ingest Pipeline</div>
+  <div class="sec-title">Nine stages. Worker-owned. Job stage written to Postgres at each transition.</div>
+
+  <div class="pipeline">
+    <div class="pipe-row">
+      <div class="pipe-stage"><div class="pipe-stage-name">1 · Receive</div><div class="pipe-stage-sub">main process · sync</div></div>
+      <div class="pipe-body">
+        <p>Validate payload (at least one of <code>text</code> or <code>ref</code> required). Write <code>entity</code> row (status: pending) and <code>job</code> row (stage: queued, kind: ingest). Return <code>{ job_id, entity_id }</code> to caller. No pipeline work begins — worker poll detects the queued row.</p>
+      </div>
+    </div>
+    <div class="pipe-row">
+      <div class="pipe-stage"><div class="pipe-stage-name">2 · Fetch</div><div class="pipe-stage-sub">worker · stage: fetching</div></div>
+      <div class="pipe-body">
+        <p>If <code>ref</code> is a URL: <code>FetchAdapter</code> (default: ReadabilityFetcher) retrieves and extracts readable text. If <code>ref</code> is a file path: read and decode via appropriate file handler. If inline <code>text</code> is supplied: use directly. Normalise whitespace, detect language, strip boilerplate. Write normalised text + frontmatter to RawStore as <code>entity.md</code>. Write <code>entity.raw_store_key</code>. Update entity status → processing.</p>
+      </div>
+    </div>
+    <div class="pipe-row">
+      <div class="pipe-stage"><div class="pipe-stage-name">3 · Chunk</div><div class="pipe-stage-sub">worker · stage: chunking</div></div>
+      <div class="pipe-body">
+        <p><code>ChunkAdapter</code> (default: SlidingWindowChunker) splits normalised text into overlapping windows. Write <code>chunk</code> rows with <code>seq</code> ordering and <code>raw_store_key</code> pointing to the chunk's entry in <code>chunks.ndjson</code>. Write <code>chunks.ndjson</code> to RawStore. Write sequential <code>relation</code> rows between adjacent chunks (<code>rel_type: sequential</code>, <code>origin: content_heuristic</code>, <code>confidence: 1.0</code>) — structural, never pruned.</p>
+      </div>
+    </div>
+    <div class="pipe-row">
+      <div class="pipe-stage"><div class="pipe-stage-name">4 · Embed</div><div class="pipe-stage-sub">worker · stage: embedding</div></div>
+      <div class="pipe-body">
+        <p>For each chunk: POST text to <code>EmbedAdapter</code> (default: OllamaEmbedAdapter → <code>POST /api/embeddings</code>). Batched where Ollama supports it. Write <code>vector(N)</code> to <code>chunk.embedding</code>. Set <code>embed_model</code> and <code>embedded_at</code>. Increment <code>embed_version</code>. After all chunks embedded: if total chunk count in DB now exceeds <code>IVFFLAT_THRESHOLD</code> and no ivfflat index exists, enqueue <code>CREATE INDEX CONCURRENTLY</code> as a background Postgres operation (must run outside a transaction block).</p>
+      </div>
+    </div>
+    <div class="pipe-row">
+      <div class="pipe-stage"><div class="pipe-stage-name">5 · Section</div><div class="pipe-stage-sub">worker · stage: sectioning</div></div>
+      <div class="pipe-body">
+        <p><code>SectionAdapter</code> receives ordered chunks with their embeddings (already in memory from stage 4). Produces section groupings.</p>
+        <p><strong>SimilarityValleySectionAdapter (default):</strong> Computes cosine similarity between each pair of adjacent chunks. Cuts section boundary where similarity &lt; <code>SECTION_SPLIT_THRESHOLD</code>. Enforces <code>SECTION_MAX_SIZE</code> cap.</p>
+        <p><strong>PositionalSectionAdapter:</strong> Groups into fixed windows of <code>SECTION_WINDOW_SIZE</code>, respecting <code>SECTION_MAX_SIZE</code> cap.</p>
+        <p>Write <code>section_summary</code> rows with <code>chunk_ids[]</code> and <code>strategy</code> tag. Summary text is blank at this stage — filled in stage 6.</p>
+      </div>
+    </div>
+    <div class="pipe-row">
+      <div class="pipe-stage"><div class="pipe-stage-name">6 · Summarise</div><div class="pipe-stage-sub">worker · stage: summarising</div></div>
+      <div class="pipe-body">
+        <p><strong>Chunk summaries (L1):</strong> For each chunk, POST chunk text to <code>LLMAdapter</code> with chunk summarisation prompt. Write 1–2 sentence result to <code>chunk.summary</code>. Parallelised where safe given Ollama concurrency.</p>
+        <p><strong>Section summaries (L2):</strong> For each section, concatenate chunk summaries for that section and POST to <code>LLMAdapter</code> with section summarisation prompt. Write result to <code>section_summary.summary</code>.</p>
+        <p><strong>Entity summary (L3):</strong> Concatenate section summaries and POST to <code>LLMAdapter</code> with entity summarisation prompt (loaded from <code>SUMMARY_PROMPT_FILE</code> if configured). Write result to <code>entity.summary</code>. Increment <code>summary_version</code>.</p>
+        <div class="pipe-tags"><span class="pill p-teal">L1 chunk summaries</span><span class="pill p-purple">L2 section summaries</span><span class="pill p-teal">L3 entity summary</span></div>
+      </div>
+    </div>
+    <div class="pipe-row">
+      <div class="pipe-stage"><div class="pipe-stage-name">7 · Extract</div><div class="pipe-stage-sub">worker · stage: extracting</div></div>
+      <div class="pipe-body">
+        <p><strong>Heuristic pass (always runs):</strong> Scan entity text for URLs matching known <code>entity.ref</code> values, shared identifiers, and citation patterns. Write matching relations with <code>origin: content_heuristic</code>, <code>confidence: 1.0</code>.</p>
+        <p><strong>LLM extraction pass</strong> (if <code>LLM_RELATION_EXTRACTION=true</code>): First, use pgvector cosine similarity to shortlist the top-<code>LLM_EXTRACT_CANDIDATES</code> candidate entities by embedding proximity to this entity's chunk embeddings. Then POST the new entity summary + shortlisted candidate summaries to <code>LLMAdapter</code> with relation extraction prompt. Parse structured response for identified relations. Write with <code>origin: content_llm</code>.</p>
+        <div class="pipe-tags"><span class="pill p-green">heuristic always</span><span class="pill p-teal">LLM shortlisted candidates</span><span class="pill p-teal">configurable</span></div>
+      </div>
+    </div>
+    <div class="pipe-row">
+      <div class="pipe-stage"><div class="pipe-stage-name">8 · Finalise</div><div class="pipe-stage-sub">worker</div></div>
+      <div class="pipe-body">
+        <p>Set <code>entity.status → ready</code>. Set <code>job.stage → done</code>, <code>job.completed_at → now()</code>. Emit <code>ingest_complete</code> event via IPC to coordinator → WebSocket stream. Entity is now queryable.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 08 Query -->
+<div class="section" id="s08">
+  <div class="sec-label">08 · Query + Lazy Relation Materialisation</div>
+  <div class="sec-title">Every query is also a graph enrichment step.</div>
+
+  <p>When <code>vkb_query</code> is called, the query text is embedded on the fly via <code>EmbedAdapter</code>. Postgres executes a cosine similarity search against <code>chunk.embedding</code> using the pgvector <code>&lt;=&gt;</code> operator, returning the top-k chunks ordered by similarity. Results are assembled with entity and section context from Postgres — no RawStore fetch required.</p>
+
+  <p>After the response is assembled and returned to the caller, a <strong>non-blocking side effect</strong> evaluates the result set for new semantic relations:</p>
+
+  <div class="pipeline">
+    <div class="pipe-row">
+      <div class="pipe-stage"><div class="pipe-stage-name">Pairwise eval</div></div>
+      <div class="pipe-body"><p>For each pair of chunks in the result set, compute cosine similarity from their stored embeddings (already loaded into memory by the pgvector query). Pairs above <code>RELATION_THRESHOLD</code> are candidates. Apply <code>RELATION_TOP_K</code> cap per chunk — only the highest-weight candidates survive if the cap would be exceeded.</p></div>
+    </div>
+    <div class="pipe-row">
+      <div class="pipe-stage"><div class="pipe-stage-name">Upsert edges</div></div>
+      <div class="pipe-body"><p>For each candidate pair: <code>INSERT INTO relation … ON CONFLICT (source_id, target_id, rel_type) DO UPDATE SET last_seen_at = now(), confidence = LEAST(1.0, confidence + RELATION_CONFIDENCE_STEP), weight = $cosine_sim</code>. If inserting new: confidence = cosine_sim, origin = semantic. Atomic, no race conditions.</p></div>
+    </div>
+    <div class="pipe-row">
+      <div class="pipe-stage"><div class="pipe-stage-name">Cap enforcement</div></div>
+      <div class="pipe-body"><p>If any chunk now has more than <code>RELATION_TOP_K</code> semantic edges, delete the lowest-confidence ones in the same transaction. Prevents unbounded edge growth as corpus and query volume scale.</p></div>
+    </div>
+  </div>
+
+  <p>Each query result item includes: chunk id, chunk summary (L1), entity id, entity type, entity summary (L3), similarity score, section summary (L2, if <code>include_sections: true</code>), <code>raw_store_key</code> for explicit raw fetch, and top-3 relations by confidence with their target summaries and origin tags.</p>
+</div>
+
+<!-- 09 Retune -->
+<div class="section" id="s09">
+  <div class="sec-label">09 · Retune Sweep</div>
+  <div class="sec-title">Scheduled. Incremental. Prunes the graph. Cleans jobs. Manages the ivfflat index.</div>
+
+  <div class="pipeline">
+    <div class="pipe-row"><div class="pipe-stage"><div class="pipe-stage-name">Re-embed</div></div><div class="pipe-body"><p>Targets chunks where <code>embed_model ≠ EMBED_MODEL</code>. Re-runs embed stage for affected chunks only. Updates <code>embed_version</code> and <code>embedded_at</code>. Incremental: only chunks with <code>embedded_at</code> before the <code>config_state</code> change timestamp for embed_model.</p></div></div>
+    <div class="pipe-row"><div class="pipe-stage"><div class="pipe-stage-name">Re-weight</div></div><div class="pipe-body"><p>Recomputes cosine similarity for all existing <code>origin: semantic</code> relations using current embeddings. Updates <code>relation.weight</code>. Relations whose recomputed weight has fallen below <code>RELATION_THRESHOLD</code> have their <code>confidence</code> decremented by <code>RELATION_CONFIDENCE_STEP</code>.</p></div></div>
+    <div class="pipe-row"><div class="pipe-stage"><div class="pipe-stage-name">Prune</div></div><div class="pipe-body"><p>Deletes semantic relations where <code>last_seen_at &lt; NOW() - INTERVAL 'RELATION_TTL_DAYS days'</code> AND <code>confidence &lt; RELATION_PRUNE_THRESHOLD</code>. Relations with origin: content_heuristic, content_llm, or asserted are never touched. Logs prune count to job progress.</p></div></div>
+    <div class="pipe-row"><div class="pipe-stage"><div class="pipe-stage-name">Re-summarise</div></div><div class="pipe-body"><p>Only runs if <code>RETUNE_SUMMARISE=true</code> (default: false). Targets entities whose chunk <code>embed_version</code> changed in this sweep. Regenerates chunk summaries → section summaries → entity summary in order. One LLM call per chunk + section + entity for affected entities. Expensive — opt-in.</p></div></div>
+    <div class="pipe-row"><div class="pipe-stage"><div class="pipe-stage-name">ivfflat index</div></div><div class="pipe-body"><p>If chunk count crossed <code>IVFFLAT_THRESHOLD</code> since last retune and no index exists: run <code>CREATE INDEX CONCURRENTLY … USING ivfflat (embedding vector_cosine_ops) WITH (lists = IVFFLAT_LISTS)</code> outside a transaction block. If index already exists: run <code>VACUUM ANALYZE chunk</code> to update planner statistics. Logs index status to job progress.</p></div></div>
+    <div class="pipe-row"><div class="pipe-stage"><div class="pipe-stage-name">Job TTL clean</div></div><div class="pipe-body"><p>DELETE from job WHERE <code>expires_at &lt; NOW()</code>. Runs as the final step of every retune sweep regardless of other stages. Keeps the job table bounded.</p></div></div>
+  </div>
+
+  <div class="note"><p><strong>Retune is incremental by default.</strong> Each stage uses a cursor anchored to the relevant <code>config_state.updated_at</code> or last retune <code>completed_at</code>. Only records newer than the cursor are processed. A full-corpus sweep can be forced with <code>force: true</code> on the retune call — useful after manual config changes or data integrity concerns.</p></div>
+</div>
+
+<!-- 10 Adapters -->
+<div class="section" id="s10">
+  <div class="sec-label">10 · Adapter Layer</div>
+  <div class="sec-title">Six interfaces. Ollama and filesystem by default. Zero core coupling.</div>
+  <p>All external calls and pluggable strategies go through adapter interfaces. Adapters are resolved at startup from a config-driven registry. Adding a new provider or strategy means implementing one interface and registering it — no changes to core pipeline code.</p>
+
+  <table class="atab">
+    <thead><tr><th>Interface</th><th>Default impl</th><th>Contract</th><th>Extension path</th></tr></thead>
+    <tbody>
+      <tr><td>EmbedAdapter</td><td>OllamaEmbedAdapter</td><td><code>embed(texts: string[]): Promise&lt;Float32Array[]&gt;</code></td><td>OpenAI, Cohere, local ONNX runtime, any embedding API</td></tr>
+      <tr><td>LLMAdapter</td><td>OllamaLLMAdapter</td><td><code>complete(system: string, user: string): Promise&lt;string&gt;</code></td><td>Any OpenAI-compatible chat completion endpoint</td></tr>
+      <tr><td>ChunkAdapter</td><td>SlidingWindowChunker</td><td><code>chunk(text: string, config: ChunkConfig): Chunk[]</code></td><td>Recursive split, semantic chunking, AST-aware for code</td></tr>
+      <tr><td>SectionAdapter</td><td>SimilarityValleySectionAdapter</td><td><code>section(chunks: OrderedChunk[]): Promise&lt;Section[]&gt;</code></td><td>PositionalSectionAdapter, custom domain strategies</td></tr>
+      <tr><td>FetchAdapter</td><td>ReadabilityFetcher</td><td><code>fetch(ref: string): Promise&lt;string&gt;</code></td><td>Per-domain extractors, PDF via pdfjs, office docs</td></tr>
+      <tr><td>RawStoreAdapter</td><td>FilesystemRawStore</td><td><code>read / write / delete / exists</code></td><td>S3RawStore (minio locally, S3 in prod)</td></tr>
+      <tr><td>RelationExtractor</td><td>HeuristicExtractor + OllamaExtractor</td><td><code>extract(entity, candidates): Promise&lt;RawRelation[]&gt;</code></td><td>Custom NER, domain-specific citation parsers</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- 11 MCP Tools -->
+<div class="section" id="s11">
+  <div class="sec-label">11 · MCP Tool Surface</div>
+  <div class="sec-title">Ten tools. Raw text in. Graph-enriched, summary-tree results out.</div>
+  <p>All tools return <code>{ ok: boolean, data: T, error?: string }</code>. Tools never throw — errors surface in the envelope. The MCP server registers no resources or prompts — tools are the entire surface.</p>
+
+  <div class="tool-grid">
+    <div class="tool-card">
+      <div class="tool-name">vkb_ingest</div>
+      <div class="tool-sig">({ type, text?, ref?, meta? }) → { job_id, entity_id }</div>
+      <div class="tool-desc">Submit raw text or a ref (URL or file path). Returns both IDs immediately. Full pipeline runs in background. At least one of <code>text</code> or <code>ref</code> is required. <code>meta</code> is an open JSON object stored on the entity.</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">vkb_job</div>
+      <div class="tool-sig">({ job_id }) → { stage, progress, entity_id? }</div>
+      <div class="tool-desc">Poll any job by id — both ingest and retune jobs. Returns current pipeline stage, chunk and section progress counts, relations added, and error detail if failed.</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">vkb_query</div>
+      <div class="tool-sig">({ text, k?, type?, threshold?, include_sections? }) → { results }</div>
+      <div class="tool-desc">Semantic search. Caller submits raw query text — embedded on the fly. Returns top-k chunks with chunk summary, entity summary, similarity score, section summary (if include_sections), and top-3 relations by confidence. Triggers lazy relation materialisation as a side effect.</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">vkb_get</div>
+      <div class="tool-sig">({ id, kind? }) → { entity | chunk }</div>
+      <div class="tool-desc">Fetch entity or chunk by id. Entity response includes all chunk ids, section summaries, entity summary, all relations (inferred + content + asserted) with weights and origins. kind defaults to entity if id matches entity table.</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">vkb_raw</div>
+      <div class="tool-sig">({ id, kind? }) → { text, meta }</div>
+      <div class="tool-desc">Fetch raw text for an entity or chunk from the RawStore. Explicit escalation to L0. For an entity, returns the full normalised body and frontmatter. For a chunk, returns the chunk text. This is the only tool that triggers a filesystem read.</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">vkb_relate</div>
+      <div class="tool-sig">({ source_id, target_id, rel_type, weight? }) → { relation_id }</div>
+      <div class="tool-desc">Assert an explicit relation between any two chunk or entity ids. Never pruned by retune. <code>weight</code> auto-computed from cosine similarity of current embeddings if not supplied. <code>source_id</code> and <code>target_id</code> can mix entity and chunk ids.</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">vkb_delete</div>
+      <div class="tool-sig">({ id }) → { ok }</div>
+      <div class="tool-desc">Delete entity and cascade: all child chunks, embeddings, section summaries, all inferred and asserted relations touching those chunks, and RawStore files. Non-reversible. Confirmed in response envelope.</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">vkb_reingest</div>
+      <div class="tool-sig">({ entity_id? }) → { queued: number, job_ids: string[] }</div>
+      <div class="tool-desc">Re-run the ingest pipeline for one or all entities that have stored raw content. Pass <code>entity_id</code> to target a single entity, or omit to re-queue all entities with a <code>raw_store_key</code>. Useful after config changes (model, chunk size, section strategy) that invalidate existing embeddings or summaries.</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">vkb_retune</div>
+      <div class="tool-sig">({ scope?, force? }) → { job_id }</div>
+      <div class="tool-desc">Trigger retune sweep immediately. <code>scope</code>: optional entity type filter. <code>force: true</code> re-processes all records ignoring the incremental cursor. Returns retune job_id for polling via <code>vkb_job</code>.</div>
+    </div>
+    <div class="tool-card">
+      <div class="tool-name">vkb_status</div>
+      <div class="tool-sig">() → { snapshot }</div>
+      <div class="tool-desc">System snapshot: entity, chunk, section, and relation counts; relation breakdown by origin; queue depth; active worker PIDs; last retune timestamp; ivfflat index status; embed model; config values for threshold, top-K, TTL, section strategy.</div>
+    </div>
+  </div>
+</div>
+
+<!-- 12 HTTP -->
+<div class="section" id="s12">
+  <div class="sec-label">12 · Observability HTTP + WebSocket Server</div>
+  <div class="sec-title">Port 4242. REST API, live WebSocket stream, and single-page app.</div>
+
+  <div class="ep"><span class="method m-get">GET</span><span class="ep-path">/health</span><span class="ep-desc">structured <code>{ ok, uptime, postgres, ollama }</code> response; returns 503 with <code>postgres: false</code> when Postgres is unreachable</span></div>
+  <div class="ep"><span class="method m-get">GET</span><span class="ep-path">/status</span><span class="ep-desc">full system snapshot; same as vkb_status tool</span></div>
+  <div class="ep"><span class="method m-get">GET</span><span class="ep-path">/entities</span><span class="ep-desc">paginated; filter by type, status, date range; FTS via ?q= against entity.summary</span></div>
+  <div class="ep"><span class="method m-get">GET</span><span class="ep-path">/entities/broken</span><span class="ep-desc">non-ready entities annotated with latest job and remediation hint: <code>reingest</code> (raw present) · <code>no_raw</code> (source lost) · <code>stuck</code> (active job stalled); must be registered before <code>/entities/:id</code> in router</span></div>
+  <div class="ep"><span class="method m-get">GET</span><span class="ep-path">/entities/:id</span><span class="ep-desc">entity detail + chunk list + section summaries + full relation set with weights and origins</span></div>
+  <div class="ep"><span class="method m-get">GET</span><span class="ep-path">/entities/:id/raw</span><span class="ep-desc">raw entity text from RawStore (entity.md body)</span></div>
+  <div class="ep"><span class="method m-del">DEL</span><span class="ep-path">/entities/:id</span><span class="ep-desc">delete entity, cascade chunks + sections + relations + RawStore files</span></div>
+  <div class="ep"><span class="method m-get">GET</span><span class="ep-path">/chunks/:id</span><span class="ep-desc">chunk summary, all relations, raw_store_key</span></div>
+  <div class="ep"><span class="method m-get">GET</span><span class="ep-path">/chunks/:id/raw</span><span class="ep-desc">raw chunk text from RawStore</span></div>
+  <div class="ep"><span class="method m-get">GET</span><span class="ep-path">/relations</span><span class="ep-desc">paginated; filter by origin, rel_type, min_confidence, min_weight, source_kind</span></div>
+  <div class="ep"><span class="method m-get">GET</span><span class="ep-path">/jobs</span><span class="ep-desc">recent jobs; filter by kind, stage; ordered by created_at desc</span></div>
+  <div class="ep"><span class="method m-post">POST</span><span class="ep-path">/ingest</span><span class="ep-desc">HTTP equivalent of vkb_ingest; same request/response shape</span></div>
+  <div class="ep"><span class="method m-post">POST</span><span class="ep-path">/reingest</span><span class="ep-desc">re-queue one or all entities with stored raw content; <code>entity_id</code> optional; returns <code>{ queued, job_ids }</code></span></div>
+  <div class="ep"><span class="method m-post">POST</span><span class="ep-path">/query</span><span class="ep-desc">HTTP equivalent of vkb_query; raw text in, summary-tree results out</span></div>
+  <div class="ep"><span class="method m-post">POST</span><span class="ep-path">/retune</span><span class="ep-desc">trigger retune; scope and force params; returns job_id</span></div>
+  <div class="ep"><span class="method m-ws">WS</span><span class="ep-path">/stream</span><span class="ep-desc">real-time events: <code>stage_change</code> · <code>progress</code> · <code>complete</code> · <code>error</code> · <code>heartbeat</code> · <code>db_unavailable</code> · <code>db_available</code> · <code>worker_crash</code></span></div>
+  <div class="ep"><span class="method m-get">GET</span><span class="ep-path">/</span><span class="ep-desc">single-page app; hash-routed — <code>#viz</code>: Three.js 3D knowledge graph (nodes coloured by status · edges coloured by origin · edge weight = confidence) · <code>#ingest</code>: job submission form with live pipeline progress and per-job stage tracker</span></div>
+
+  <div class="note"><p>Legacy paths <code>/viz</code> and <code>/ingest</code> redirect to their hash-route equivalents (<code>/#viz</code>, <code>/#ingest</code>). The SPA maintains a single persistent WebSocket to <code>/stream</code> across both views — used for live pipeline events and the DB status alert banner (see §16). All API responses use the envelope <code>{ ok, data }</code> / <code>{ ok: false, error }</code>. Routes that require Postgres return <strong>503</strong> when the pool is unreachable.</p></div>
+</div>
+
+<!-- 13 Config -->
+<div class="section" id="s13">
+  <div class="sec-label">13 · Configuration Reference</div>
+  <div class="sec-title">All tunable. All env-var driven. All recorded in config_state for drift detection.</div>
+
+  <table class="cfg-table">
+    <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr class="cfg-group"><td colspan="3">Infrastructure</td></tr>
+      <tr><td class="cfg-key">DATABASE_URL</td><td class="cfg-def">postgres://localhost/vkb</td><td class="cfg-desc">Postgres connection string. pgvector extension must be installed.</td></tr>
+      <tr><td class="cfg-key">RAWSTORE_ADAPTER</td><td class="cfg-def">filesystem</td><td class="cfg-desc">filesystem | s3 — selects RawStore implementation</td></tr>
+      <tr><td class="cfg-key">RAWSTORE_PATH</td><td class="cfg-def">./rawstore</td><td class="cfg-desc">Base path for filesystem RawStore</td></tr>
+      <tr><td class="cfg-key">RAWSTORE_S3_BUCKET</td><td class="cfg-def">(none)</td><td class="cfg-desc">S3-compatible bucket name; required if RAWSTORE_ADAPTER=s3</td></tr>
+      <tr><td class="cfg-key">RAWSTORE_S3_ENDPOINT</td><td class="cfg-def">(none)</td><td class="cfg-desc">S3-compatible endpoint URL (e.g. minio on localhost)</td></tr>
+
+      <tr class="cfg-group"><td colspan="3">Ollama</td></tr>
+      <tr><td class="cfg-key">OLLAMA_BASE_URL</td><td class="cfg-def">http://localhost:11434</td><td class="cfg-desc">Ollama HTTP base URL</td></tr>
+      <tr><td class="cfg-key">EMBED_MODEL</td><td class="cfg-def">nomic-embed-text</td><td class="cfg-desc">Ollama model tag for embeddings. Changing this triggers re-embed on next retune.</td></tr>
+      <tr><td class="cfg-key">EMBED_DIM</td><td class="cfg-def">768</td><td class="cfg-desc">Must match model output dimension. Validated against config_state on startup.</td></tr>
+      <tr><td class="cfg-key">LLM_MODEL</td><td class="cfg-def">llama3.2</td><td class="cfg-desc">Ollama chat model for summarisation and relation extraction</td></tr>
+
+      <tr class="cfg-group"><td colspan="3">Chunking</td></tr>
+      <tr><td class="cfg-key">CHUNK_SIZE</td><td class="cfg-def">512</td><td class="cfg-desc">Token window size for sliding window chunker. Changing triggers re-chunk on next retune.</td></tr>
+      <tr><td class="cfg-key">CHUNK_OVERLAP</td><td class="cfg-def">64</td><td class="cfg-desc">Token overlap between adjacent chunks</td></tr>
+
+      <tr class="cfg-group"><td colspan="3">Sectioning</td></tr>
+      <tr><td class="cfg-key">SECTION_STRATEGY</td><td class="cfg-def">similarity_valley</td><td class="cfg-desc">similarity_valley | positional — selects SectionAdapter. Changing triggers re-section on next retune.</td></tr>
+      <tr><td class="cfg-key">SECTION_SPLIT_THRESHOLD</td><td class="cfg-def">0.65</td><td class="cfg-desc">Cosine similarity floor for section boundary cut (similarity_valley only)</td></tr>
+      <tr><td class="cfg-key">SECTION_WINDOW_SIZE</td><td class="cfg-def">5</td><td class="cfg-desc">Fixed chunks per section (positional only)</td></tr>
+      <tr><td class="cfg-key">SECTION_MAX_SIZE</td><td class="cfg-def">8</td><td class="cfg-desc">Hard cap on chunks per section; applies to both strategies</td></tr>
+
+      <tr class="cfg-group"><td colspan="3">Relations</td></tr>
+      <tr><td class="cfg-key">RELATION_THRESHOLD</td><td class="cfg-def">0.75</td><td class="cfg-desc">Minimum cosine similarity to materialise a semantic relation at query time</td></tr>
+      <tr><td class="cfg-key">RELATION_TOP_K</td><td class="cfg-def">10</td><td class="cfg-desc">Max inferred semantic relations per chunk</td></tr>
+      <tr><td class="cfg-key">RELATION_CONFIDENCE_STEP</td><td class="cfg-def">0.05</td><td class="cfg-desc">Confidence increment per query rediscovery; decrement per retune re-weight below threshold</td></tr>
+      <tr><td class="cfg-key">RELATION_TTL_DAYS</td><td class="cfg-def">30</td><td class="cfg-desc">Semantic edges not seen within this window are pruning candidates</td></tr>
+      <tr><td class="cfg-key">RELATION_PRUNE_THRESHOLD</td><td class="cfg-def">0.6</td><td class="cfg-desc">Confidence floor below which TTL-expired semantic edges are pruned</td></tr>
+      <tr><td class="cfg-key">LLM_RELATION_EXTRACTION</td><td class="cfg-def">true</td><td class="cfg-desc">Enable LLM-based content relation extraction at ingest</td></tr>
+      <tr><td class="cfg-key">LLM_EXTRACT_CANDIDATES</td><td class="cfg-def">20</td><td class="cfg-desc">Max entity summaries shortlisted by pgvector before LLM extraction pass</td></tr>
+
+      <tr class="cfg-group"><td colspan="3">Vector index</td></tr>
+      <tr><td class="cfg-key">IVFFLAT_THRESHOLD</td><td class="cfg-def">1000</td><td class="cfg-desc">Chunk count above which ivfflat ANN index is created</td></tr>
+      <tr><td class="cfg-key">IVFFLAT_LISTS</td><td class="cfg-def">100</td><td class="cfg-desc">Number of ivfflat lists; pgvector recommends sqrt(n) for n vectors</td></tr>
+
+      <tr class="cfg-group"><td colspan="3">Workers</td></tr>
+      <tr><td class="cfg-key">WORKER_CONCURRENCY</td><td class="cfg-def">2</td><td class="cfg-desc">Number of ingest worker child processes</td></tr>
+      <tr><td class="cfg-key">INGEST_MAX_RETRIES</td><td class="cfg-def">3</td><td class="cfg-desc">Per-job retry limit before stage → error</td></tr>
+      <tr><td class="cfg-key">RETUNE_INTERVAL_HOURS</td><td class="cfg-def">6</td><td class="cfg-desc">Scheduled retune frequency; 0 to disable</td></tr>
+      <tr><td class="cfg-key">RETUNE_SUMMARISE</td><td class="cfg-def">false</td><td class="cfg-desc">Re-generate summaries during retune for affected entities. Expensive — opt-in.</td></tr>
+      <tr><td class="cfg-key">JOB_TTL_DAYS</td><td class="cfg-def">7</td><td class="cfg-desc">Completed job rows deleted after this many days</td></tr>
+
+      <tr class="cfg-group"><td colspan="3">Prompts</td></tr>
+      <tr><td class="cfg-key">SUMMARY_PROMPT_FILE</td><td class="cfg-def">(built-in)</td><td class="cfg-desc">Path to custom entity summarisation system prompt. Overrides built-in default.</td></tr>
+      <tr><td class="cfg-key">CHUNK_SUMMARY_PROMPT_FILE</td><td class="cfg-def">(built-in)</td><td class="cfg-desc">Path to custom chunk summarisation prompt</td></tr>
+      <tr><td class="cfg-key">SECTION_SUMMARY_PROMPT_FILE</td><td class="cfg-def">(built-in)</td><td class="cfg-desc">Path to custom section summarisation prompt</td></tr>
+      <tr><td class="cfg-key">RELATION_EXTRACT_PROMPT_FILE</td><td class="cfg-def">(built-in)</td><td class="cfg-desc">Path to custom relation extraction prompt</td></tr>
+
+      <tr class="cfg-group"><td colspan="3">Servers</td></tr>
+      <tr><td class="cfg-key">MCP_PORT</td><td class="cfg-def">3333</td><td class="cfg-desc">MCP HTTP server port; set to 0 to use stdio transport only</td></tr>
+      <tr><td class="cfg-key">OBS_PORT</td><td class="cfg-def">4242</td><td class="cfg-desc">Observability HTTP + WebSocket server port</td></tr>
+      <tr><td class="cfg-key">OBS_SECRET</td><td class="cfg-def">(none)</td><td class="cfg-desc">If set, observability endpoints require Authorization: Bearer {OBS_SECRET}</td></tr>
+      <tr><td class="cfg-key">TLS_CERT</td><td class="cfg-def">(none)</td><td class="cfg-desc">Path to TLS certificate file. Set both TLS_CERT and TLS_KEY to enable HTTPS and WSS on all servers. Generate a dev cert with <code>scripts/gen-cert.ps1</code>.</td></tr>
+      <tr><td class="cfg-key">TLS_KEY</td><td class="cfg-def">(none)</td><td class="cfg-desc">Path to TLS private key file.</td></tr>
+
+      <tr class="cfg-group"><td colspan="3">Logging</td></tr>
+      <tr><td class="cfg-key">LOG_LEVEL</td><td class="cfg-def">info</td><td class="cfg-desc">debug | info | warn | error — controls log verbosity on stderr</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- 14 Open Decisions -->
+<div class="section" id="s14">
+  <div class="sec-label">14 · Remaining Open Decisions</div>
+  <div class="sec-title">Known tensions to resolve before or during v0.1 build.</div>
+
+  <div class="assumption"><span class="a-num">D1</span><span class="a-text"><strong>RELATION_CONFIDENCE_STEP is a policy decision, not an implementation detail.</strong> At 0.05, an edge starting at 0.75 (cosine sim) needs 5 rediscoveries to reach 1.0, and 3 misses below RELATION_PRUNE_THRESHOLD to get pruned. Whether that's the right decay/reinforcement rate depends entirely on expected query volume. This should be surfaced as an explicit tuning concern in documentation — operators setting up a low-query-volume system will need a smaller step; high-volume systems may want a larger one.</span></div>
+
+  <div class="assumption"><span class="a-num">D2</span><span class="a-text"><strong>Chunk summary quality degrades on very short chunks.</strong> A 512-token window with 64-token overlap can produce chunks as short as 64 tokens near document boundaries. A 1–2 sentence LLM summary of 64 tokens of text is degenerate — it may be longer than the source. A minimum chunk size filter should be applied before the summarise stage: chunks below a token threshold (e.g. 100 tokens) inherit the entity summary rather than getting their own LLM call.</span></div>
+
+  <div class="assumption"><span class="a-num">D3</span><span class="a-text"><strong>ivfflat index requires training data — cold start is slow.</strong> Below IVFFLAT_THRESHOLD, exact cosine scan is used and is actually faster. Above the threshold, <code>CREATE INDEX CONCURRENTLY</code> can take minutes on large tables. The retune worker must handle the constraint that <code>CREATE INDEX CONCURRENTLY</code> cannot run inside a transaction block. This is flagged in the pipeline spec, but the worker implementation needs to explicitly manage connection state for this operation.</span></div>
+
+  <div class="assumption"><span class="a-num">D4</span><span class="a-text"><strong>Section re-generation on config change is expensive and potentially disruptive.</strong> If SECTION_STRATEGY changes from similarity_valley to positional, all entities need re-sectioning — which means deleting existing section_summary rows and regenerating them, then regenerating entity summaries (since entity summaries are derived from section summaries). This is a large retune operation. The spec currently triggers this automatically on drift detection; it may be preferable to require an explicit operator action (<code>vkb_retune force: true</code>) rather than auto-triggering.</span></div>
+
+  <div class="assumption"><span class="a-num">D5</span><span class="a-text"><strong>Lazy materialisation only covers co-occurring chunks in the same result set.</strong> Semantically related chunks that never appear together in a single query result will never get a semantic edge. Graph density therefore correlates with query diversity, not just corpus size. This is a known property of the lazy approach — not a bug — but worth documenting so operators understand that a knowledge base queried narrowly will have a sparser graph than one queried broadly.</span></div>
+</div>
+
+<!-- 15 Out of Scope -->
+<div class="section" id="s15">
+  <div class="sec-label">15 · Out of Scope (v0.1)</div>
+  <div class="sec-title">Explicitly deferred to keep the initial build tractable.</div>
+  <div class="two-col">
+    <div>
+      <div class="assumption"><span class="a-num">—</span><span class="a-text">Authentication and RBAC beyond shared secret env var</span></div>
+      <div class="assumption"><span class="a-num">—</span><span class="a-text">Multi-modal ingestion — images, audio, video, PDF with layout</span></div>
+      <div class="assumption"><span class="a-num">—</span><span class="a-text">Cross-encoder reranking of query results</span></div>
+      <div class="assumption"><span class="a-num">—</span><span class="a-text">Distributed / multi-node deployment</span></div>
+      <div class="assumption"><span class="a-num">—</span><span class="a-text">Webhook callbacks on job completion</span></div>
+    </div>
+    <div>
+      <div class="assumption"><span class="a-num">—</span><span class="a-text">Entity versioning and update history</span></div>
+      <div class="assumption"><span class="a-num">—</span><span class="a-text">Multi-hop graph traversal queries</span></div>
+      <div class="assumption"><span class="a-num">—</span><span class="a-text">Fine-tuning or custom embedding model training</span></div>
+      <div class="assumption"><span class="a-num">—</span><span class="a-text">Hybrid BM25 + vector search (full-text + semantic)</span></div>
+      <div class="assumption"><span class="a-num">—</span><span class="a-text">Per-entity access control or tenancy</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- 16 DB Resilience -->
+<div class="section" id="s16">
+  <div class="sec-label">16 · Database Resilience</div>
+  <div class="sec-title">Startup retry. Runtime 503s. WebSocket events. Worker backoff.</div>
+  <div class="sec-sub">The system tolerates Postgres being temporarily unavailable — both at startup and while running — without requiring a process restart.</div>
+
+  <div class="proc-map">
+    <div class="proc-row">
+      <div class="proc-label">Startup probe</div>
+      <div class="proc-detail">Before running migrations or starting workers, the main process calls <code>waitForDb()</code>. It attempts a real <code>pool.connect()</code> up to 10 times with a 3-second interval between attempts, tolerating the Docker container taking a few seconds to become healthy after <code>docker compose up</code>. If all attempts fail, the process exits with a clear error. Each retry emits a WARN log.</div>
+    </div>
+    <div class="proc-row">
+      <div class="proc-label">HTTP 503</div>
+      <div class="proc-detail">All HTTP routes that touch Postgres wrap their DB calls with a <code>sendErr()</code> helper that inspects <code>isDbConnectionError(e)</code>. DB connectivity errors return <code>503 { ok: false, error: "Database unavailable — check that PostgreSQL (Docker) is running" }</code> instead of a generic 500. The <code>/health</code> endpoint probes Postgres independently and returns <code>503 { postgres: false }</code> when the pool cannot connect, while still reporting Ollama status.</div>
+    </div>
+    <div class="proc-row">
+      <div class="proc-label">Coordinator events</div>
+      <div class="proc-detail">The coordinator heartbeat (runs every ~30 seconds) executes a real DB query. On the first failure, if <code>isDbConnectionError(e)</code> is true, it sets <code>_dbDown = true</code> and broadcasts <code>{ type: "db_unavailable", ts }</code> to all WebSocket clients. On the next successful heartbeat after a DB-down state, it sets <code>_dbDown = false</code> and broadcasts <code>{ type: "db_available", ts }</code>. The boolean flag prevents duplicate event broadcasts on consecutive failures.</div>
+    </div>
+    <div class="proc-row">
+      <div class="proc-label">Worker backoff</div>
+      <div class="proc-detail">Ingest workers catch DB errors in their main poll loop separately from other errors. When <code>isDbConnectionError(e)</code> is true, the worker logs a clear WARN ("Database unavailable — pausing 30 s…") and sleeps for 30 seconds before retrying rather than the normal 2-second poll interval. Non-DB errors retain the 5-second error backoff. This prevents workers from hammering a down database with rapid retries while keeping log output meaningful.</div>
+    </div>
+    <div class="proc-row">
+      <div class="proc-label">UI banner</div>
+      <div class="proc-detail">The SPA at <code>/</code> maintains a persistent WebSocket to <code>/stream</code>. When a <code>db_unavailable</code> event arrives, an amber alert banner appears fixed below the header: "Database unavailable — check that PostgreSQL (Docker) is running." When <code>db_available</code> is received, the banner switches to teal ("Database connection restored.") and auto-dismisses after 4 seconds. The user can also dismiss it manually. The banner is visible across both the graph and ingest views.</div>
+    </div>
+    <div class="proc-row">
+      <div class="proc-label">isDbConnectionError</div>
+      <div class="proc-detail">A shared helper in <code>db/client.ts</code> normalises DB error detection across all three consumers (HTTP server, coordinator, workers). It checks <code>err.code</code> for network error codes (<code>ECONNREFUSED</code>, <code>ENOTFOUND</code>, <code>ETIMEDOUT</code>, <code>ECONNRESET</code>, <code>EPIPE</code>), checks <code>err.message</code> for pg pool messages ("Connection terminated", "Client was closed", "terminating connection", "Connection timeout"), and recursively checks sub-errors in <code>AggregateError.errors[]</code>.</div>
+    </div>
+  </div>
+</div>
+
+</main>
+</div>
+
+<script>
+const links = document.querySelectorAll('.nav-link');
+const sections = document.querySelectorAll('.section[id]');
+const obs = new IntersectionObserver(entries => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      links.forEach(l => l.classList.remove('active'));
+      const active = document.querySelector(`.nav-link[href="#${e.target.id}"]`);
+      if (active) active.classList.add('active');
+    }
+  });
+}, { rootMargin: '-10% 0px -85% 0px' });
+sections.forEach(s => obs.observe(s));
+</script>
+</body>
+</html>
