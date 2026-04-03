@@ -59,8 +59,8 @@ export async function waitForDb(
 export function isDbConnectionError(err: unknown): boolean {
   if (err == null) return false;
   // AggregateError — check every sub-error
-  if (err instanceof Error && Array.isArray((err as { errors?: unknown[] }).errors)) {
-    return (err as { errors: unknown[] }).errors.some(isDbConnectionError);
+  if (err instanceof Error && Array.isArray((err as unknown as { errors?: unknown[] }).errors)) {
+    return (err as unknown as { errors: unknown[] }).errors.some(isDbConnectionError);
   }
   if (err instanceof Error) {
     const code = (err as NodeJS.ErrnoException).code ?? '';

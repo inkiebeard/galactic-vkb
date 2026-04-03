@@ -286,6 +286,72 @@
   }
   .btn-secondary:hover { color: var(--ink); border-color: var(--muted); }
 
+  /* ── Archived jobs panel ─────────────────────────────────────────────────── */
+  #archived-panel {
+    margin-top: 12px;
+  }
+  .archived-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: none;
+    border: none;
+    color: var(--hint);
+    font-family: var(--mono);
+    font-size: 10px;
+    cursor: pointer;
+    padding: 6px 0;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    width: 100%;
+    text-align: left;
+    transition: color 0.15s;
+  }
+  .archived-toggle:hover { color: var(--muted); }
+  .archived-toggle .arc-badge {
+    background: var(--card2);
+    border: 0.5px solid var(--line2);
+    border-radius: 10px;
+    padding: 1px 7px;
+    font-size: 9px;
+    color: var(--hint);
+  }
+  .archived-toggle .arc-caret { margin-left: auto; transition: transform 0.2s; }
+  .archived-toggle.open .arc-caret { transform: rotate(180deg); }
+
+  .archived-body {
+    display: none;
+    background: var(--card);
+    border: 0.5px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .archived-body.open { display: block; }
+
+  .archive-empty {
+    padding: 24px 16px;
+    text-align: center;
+    font-size: 11px;
+    color: var(--hint);
+  }
+
+  .arc-clear-btn {
+    background: none;
+    border: none;
+    color: var(--hint);
+    font-family: var(--mono);
+    font-size: 10px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 3px;
+    transition: color 0.15s;
+  }
+  .arc-clear-btn:hover { color: var(--coral); }
+
+  /* job-card inside archive has slightly dimmed style */
+  .archived-body .job-card { opacity: 0.75; }
+  .archived-body .job-card:hover { opacity: 1; }
+
   /* ── Remediation panel ───────────────────────────────────────────────────── */
   #remediation {
     max-width: 1200px;
@@ -385,18 +451,15 @@
 </head>
 <body>
 
-<!-- Three.js canvas + tooltip: always in DOM, display:none in ingest view -->
 <canvas id="graph"></canvas>
 <div id="tooltip"></div>
 
-<!-- ── System alert banner ─────────────────────────────────────────────────── -->
 <div id="sys-alert" role="alert">
   <span id="sys-alert-icon">⚠</span>
   <span id="sys-alert-msg"></span>
   <button id="sys-alert-dismiss" title="Dismiss">&#x2715;</button>
 </div>
 
-<!-- ── Shared header ─────────────────────────────────────────────────────── -->
 <header>
   <div class="nav-anchor" id="nav-anchor" role="button" aria-expanded="false" aria-haspopup="true">
     <div class="brand">vkb</div>
@@ -414,7 +477,7 @@
     </div>
   </div>
 
-  <!-- Viz view: entity/chunk/relation counters + WS status -->
+  <!-- Viz stats (shown in viz mode) -->
   <div class="hd-viz">
     <div class="stat">Entities <span id="s-entities">—</span></div>
     <div class="stat">Chunks <span id="s-chunks">—</span></div>
@@ -423,7 +486,7 @@
     <div class="stat" id="ws-status" style="margin-left:auto">connecting…</div>
   </div>
 
-  <!-- Ingest view: WS live indicator -->
+  <!-- Ingest WS indicator (shown in ingest mode) -->
   <div class="hd-ingest">
     <div class="ws-dot" id="ws-dot"></div>
     <span id="ws-label" style="font-size:10px;color:var(--hint)">connecting…</span>
@@ -567,6 +630,23 @@
           </div>
         </div>
       </div>
+
+      <!-- Archived jobs -->
+      <div id="archived-panel">
+        <button class="archived-toggle" id="archived-toggle" aria-expanded="false">
+          Archived jobs
+          <span class="arc-badge" id="arc-badge">0</span>
+          <span class="arc-caret">▼</span>
+        </button>
+        <div class="archived-body" id="archived-body">
+          <div style="display:flex;align-items:center;justify-content:flex-end;padding:8px 12px;border-bottom:0.5px solid var(--line)">
+            <button class="arc-clear-btn" id="arc-clear-btn">Clear all</button>
+          </div>
+          <div id="archived-list">
+            <div class="archive-empty" id="archive-empty">No archived jobs yet.</div>
+          </div>
+        </div>
+      </div>
     </div>
   </main>
 
@@ -593,825 +673,6 @@
   </section>
 </div>
 
-<!-- Viz module: initializes Three.js renderer, connects its own WebSocket -->
-<script type="module" src="/viz/viz.js"></script>
-
-<script>
-/* ═══════════════════════════════════════════════════════════════════════════
-   Router — hash-based SPA navigation
-   ═══════════════════════════════════════════════════════════════════════════ */
-function navigate(view) {
-  const isIngest = view === 'ingest';
-
-  if (isIngest) {
-    document.body.classList.add('view-ingest');
-  } else {
-    document.body.classList.remove('view-ingest');
-  }
-
-  document.title = isIngest ? 'vkb · Ingest' : 'vkb · Graph';
-
-  const targetHash = '#' + (isIngest ? 'ingest' : 'viz');
-  if (location.hash !== targetHash) {
-    history.replaceState(null, '', targetHash);
-  }
-
-  // Update nav active state + current label
-  document.querySelectorAll('[data-nav]').forEach(el => {
-    const active = el.dataset.nav === (isIngest ? 'ingest' : 'viz');
-    el.classList.toggle('active', active);
-    const existing = el.querySelector('.nav-item-sub');
-    if (existing) existing.remove();
-    if (active) {
-      const sub = document.createElement('span');
-      sub.className = 'nav-item-sub';
-      sub.textContent = 'current';
-      el.appendChild(sub);
-    }
-  });
-}
-
-window.addEventListener('hashchange', () => {
-  navigate(location.hash === '#ingest' ? 'ingest' : 'viz');
-  navPopout.classList.remove('open');
-  navAnchor.setAttribute('aria-expanded', 'false');
-});
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   Nav menu
-   ═══════════════════════════════════════════════════════════════════════════ */
-const navAnchor = document.getElementById('nav-anchor');
-const navPopout = document.getElementById('nav-popout');
-
-navAnchor.addEventListener('click', e => {
-  e.stopPropagation();
-  const open = navPopout.classList.toggle('open');
-  navAnchor.setAttribute('aria-expanded', String(open));
-});
-document.addEventListener('click', () => {
-  navPopout.classList.remove('open');
-  navAnchor.setAttribute('aria-expanded', 'false');
-});
-navPopout.addEventListener('click', e => e.stopPropagation());
-
-// Bootstrap: set initial view from hash
-navigate(location.hash === '#ingest' ? 'ingest' : 'viz');
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   Ingest — state
-   ═══════════════════════════════════════════════════════════════════════════ */
-const STAGES        = ['queued','fetching','chunking','embedding','sectioning','summarising','extracting','done'];
-const STAGE_IDX     = Object.fromEntries(STAGES.map((s, i) => [s, i]));
-const ACTIVE_STAGES = new Set(['queued','fetching','chunking','embedding','sectioning','summarising','extracting']);
-
-const ingestJobs = new Map();
-let ingestWs     = null;
-let activeTab    = 'url';
-let pendingFiles       = [];
-let pendingFolderFiles = [];
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   Ingest — WebSocket
-   ═══════════════════════════════════════════════════════════════════════════ */
-function connectIngestWS() {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ingestWs = new WebSocket(`${proto}//${location.host}/stream`);
-
-  ingestWs.addEventListener('open', () => {
-    document.getElementById('ws-dot').classList.add('connected');
-    document.getElementById('ws-label').textContent   = 'live';
-    document.getElementById('ws-label').style.color   = 'var(--teal)';
-  });
-  ingestWs.addEventListener('close', () => {
-    document.getElementById('ws-dot').classList.remove('connected');
-    document.getElementById('ws-label').textContent   = 'reconnecting…';
-    document.getElementById('ws-label').style.color   = 'var(--hint)';
-    setTimeout(connectIngestWS, 3000);
-  });
-  ingestWs.addEventListener('error', () => ingestWs.close());
-  ingestWs.addEventListener('message', e => {
-    let msg;
-    try { msg = JSON.parse(e.data); } catch { return; }
-    if (!msg) return;
-
-    // ── System-level events (visible regardless of current view) ──────────
-    if (msg.type === 'db_unavailable') {
-      showSysAlert('Database unavailable — check that PostgreSQL (Docker) is running.', false);
-      return;
-    }
-    if (msg.type === 'db_available') {
-      showSysAlert('Database connection restored.', true);
-      setTimeout(hideSysAlert, 4000);
-      return;
-    }
-
-    if (!msg.job_id) return;
-    const job = ingestJobs.get(msg.job_id);
-    if (!job) return;
-    if (msg.type === 'stage_change' && msg.stage) {
-      updateJobStage(msg.job_id, msg.stage, null);
-    } else if (msg.type === 'error') {
-      const errMsg = typeof msg.payload === 'string'
-        ? msg.payload
-        : (msg.payload?.detail ?? msg.payload?.error ?? 'Pipeline error');
-      updateJobStage(msg.job_id, 'error', errMsg);
-    } else if (msg.type === 'complete') {
-      updateJobStage(msg.job_id, 'done', null);
-    }
-  });
-}
-connectIngestWS();
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   System alert banner
-   ═══════════════════════════════════════════════════════════════════════════ */
-function showSysAlert(msg, isOk) {
-  const el     = document.getElementById('sys-alert');
-  const msgEl  = document.getElementById('sys-alert-msg');
-  const iconEl = document.getElementById('sys-alert-icon');
-  if (msgEl)  msgEl.textContent  = msg;
-  if (iconEl) iconEl.textContent = isOk ? '\u2713' : '\u26a0';
-  if (el)     el.className       = isOk ? 'visible ok' : 'visible';
-}
-function hideSysAlert() {
-  const el = document.getElementById('sys-alert');
-  if (el) el.className = '';
-}
-document.getElementById('sys-alert-dismiss').addEventListener('click', hideSysAlert);
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   Ingest — tabs
-   ═══════════════════════════════════════════════════════════════════════════ */
-document.querySelectorAll('.tab-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-    btn.classList.add('active');
-    activeTab = btn.dataset.tab;
-    document.getElementById(`tab-${activeTab}`).classList.add('active');
-    updateSubmitState();
-  });
-});
-document.getElementById('url-input').addEventListener('input', updateSubmitState);
-document.getElementById('text-content').addEventListener('input', updateSubmitState);
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   Ingest — file helpers
-   ═══════════════════════════════════════════════════════════════════════════ */
-function fmtSize(bytes) {
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-}
-
-function escHtml(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-// Best-effort name normalisation: strip extension, turn separators into spaces,
-// drop any remaining non-alphanumeric characters, collapse whitespace.
-function normaliseName(filename) {
-  return filename
-    .replace(/\.[^.]+$/, '')          // strip extension
-    .replace(/[-_./ \\]+/g, ' ')      // separators → space
-    .replace(/[^a-zA-Z0-9 ]/g, '')    // drop non-alphanumeric
-    .replace(/\s+/g, ' ')             // collapse whitespace
-    .trim();
-}
-
-function isTextFile(name) {
-  return /\.(txt|md|markdown|html?|csv|json|xml|rst|org|tex|js|ts|py|rb|go|rs|c|cpp|h|java|kt|swift|sql|yaml|yml|toml|sh|bash|zsh|ps1|r|jl|lua|pl|php)$/i.test(name);
-}
-
-function isEpub(name) {
-  return /\.epub$/i.test(name);
-}
-
-async function readFileArrayBuffer(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload  = e => resolve(e.target.result);
-    reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
-    reader.readAsArrayBuffer(file);
-  });
-}
-
-function collapseWhitespace(text) {
-  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-    .replace(/\t/g, ' ').replace(/ {2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
-}
-
-// Parse an EPUB file and return extracted plain text.
-// EPUB is a ZIP containing XHTML chapters referenced by an OPF manifest.
-async function parseEpub(file) {
-  const buf = await readFileArrayBuffer(file);
-  const zip = await JSZip.loadAsync(buf);
-
-  // 1. container.xml → OPF path
-  const containerXml = await zip.file('META-INF/container.xml')?.async('string');
-  if (!containerXml) throw new Error('Missing META-INF/container.xml');
-  const containerDoc = new DOMParser().parseFromString(containerXml, 'application/xml');
-  const opfPath = containerDoc.querySelector('rootfile')?.getAttribute('full-path');
-  if (!opfPath) throw new Error('Cannot locate OPF in container.xml');
-
-  // 2. OPF → spine item hrefs in reading order
-  const opfXml = await zip.file(opfPath)?.async('string');
-  if (!opfXml) throw new Error(`Missing OPF at ${opfPath}`);
-  const opfDoc = new DOMParser().parseFromString(opfXml, 'application/xml');
-  const opfDir = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : '';
-
-  const manifest = {};
-  opfDoc.querySelectorAll('manifest item').forEach(item => {
-    manifest[item.getAttribute('id')] = item.getAttribute('href');
-  });
-  const spineHrefs = Array.from(opfDoc.querySelectorAll('spine itemref'))
-    .map(ref => manifest[ref.getAttribute('idref')])
-    .filter(Boolean);
-
-  // 3. Extract plain text from each XHTML chapter
-  const parts = [];
-  for (const href of spineHrefs) {
-    // href may contain a fragment (#anchor) — strip it for ZIP lookup
-    const zipPath = opfDir + href.replace(/#.*$/, '');
-    const html = await zip.file(zipPath)?.async('string');
-    if (!html) continue;
-    const doc  = new DOMParser().parseFromString(html, 'application/xhtml+xml');
-    const body = doc.querySelector('body');
-    if (body) parts.push(body.textContent || '');
-  }
-
-  if (!parts.length) throw new Error('No readable chapters found in EPUB');
-  return collapseWhitespace(parts.join('\n\n'));
-}
-
-async function readFileText(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload  = e => resolve(e.target.result);
-    reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
-    reader.readAsText(file, 'utf-8');
-  });
-}
-
-function renderFileList(listEl, files) {
-  listEl.innerHTML = '';
-  files.forEach((f, i) => {
-    const item    = document.createElement('div');
-    item.className = f.skipped ? 'file-item fi-skipped' : 'file-item';
-    const label   = escHtml(f.displayName || normaliseName(f.name));
-    const hasPath = f.path && f.path !== f.name;
-    const subPath = hasPath ? `<span class="fi-path">${escHtml(f.path)}</span>` : '';
-    const rightSide = f.skipped
-      ? `<span class="fi-skip-chip" title="${escHtml(f.skipReason || 'unsupported format')}">skipped</span>`
-      : `<span class="fi-size">${fmtSize(f.size)}</span>`;
-    item.innerHTML = `
-      <span class="fi-info" title="${escHtml(f.name)}">
-        <span class="fi-name">${label}</span>${subPath}
-      </span>
-      ${rightSide}
-      <button class="fi-remove" data-idx="${i}" title="Remove">✕</button>
-    `;
-    listEl.appendChild(item);
-  });
-  listEl.querySelectorAll('.fi-remove').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const idx = parseInt(btn.dataset.idx);
-      if (listEl.id === 'files-list') pendingFiles.splice(idx, 1);
-      else pendingFolderFiles.splice(idx, 1);
-      renderFileList(listEl, listEl.id === 'files-list' ? pendingFiles : pendingFolderFiles);
-      updateSubmitState();
-    });
-  });
-}
-
-async function handleFileSelection(input, targetArr, listEl) {
-  const rawFiles = Array.from(input.files || []);
-  for (const f of rawFiles) {
-    const base = { name: f.name, displayName: normaliseName(f.name), size: f.size, path: f.webkitRelativePath || f.name };
-    if (isEpub(f.name)) {
-      try {
-        const text = await parseEpub(f);
-        targetArr.push({ ...base, text });
-      } catch (err) {
-        console.warn('EPUB parse failed', f.name, err.message);
-        targetArr.push({ ...base, text: null, skipped: true, skipReason: 'epub parse error' });
-      }
-    } else if (isTextFile(f.name)) {
-      try {
-        const text = await readFileText(f);
-        targetArr.push({ ...base, text });
-      } catch (err) {
-        console.warn('Skipped', f.name, err.message);
-        targetArr.push({ ...base, text: null, skipped: true, skipReason: 'read error' });
-      }
-    } else {
-      targetArr.push({ ...base, text: null, skipped: true, skipReason: 'unsupported format' });
-    }
-  }
-  renderFileList(listEl, targetArr);
-  updateSubmitState();
-}
-
-const filesInput  = document.getElementById('files-input');
-const filesList   = document.getElementById('files-list');
-const folderInput = document.getElementById('folder-input');
-const folderList  = document.getElementById('folder-list');
-
-filesInput.addEventListener('change',  () => handleFileSelection(filesInput,  pendingFiles,       filesList));
-folderInput.addEventListener('change', () => handleFileSelection(folderInput, pendingFolderFiles, folderList));
-
-['files-drop','folder-drop'].forEach(id => {
-  const zone = document.getElementById(id);
-  zone.addEventListener('dragover',  e  => { e.preventDefault(); zone.classList.add('drag-over'); });
-  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
-  zone.addEventListener('drop', e => {
-    e.preventDefault();
-    zone.classList.remove('drag-over');
-    const dt = e.dataTransfer;
-    if (!dt || !dt.files.length) return;
-    const arr = id === 'files-drop' ? pendingFiles : pendingFolderFiles;
-    const lst = id === 'files-drop' ? filesList    : folderList;
-    const rawFiles = Array.from(dt.files);
-    Promise.all(rawFiles.map(f => {
-      const base = { name: f.name, displayName: normaliseName(f.name), size: f.size, path: f.name };
-      if (isEpub(f.name)) {
-        return parseEpub(f)
-          .then(text => arr.push({ ...base, text }))
-          .catch(err => arr.push({ ...base, text: null, skipped: true, skipReason: 'epub parse error' }));
-      }
-      if (!isTextFile(f.name)) {
-        arr.push({ ...base, text: null, skipped: true, skipReason: 'unsupported format' });
-        return;
-      }
-      return readFileText(f)
-        .then(text => arr.push({ ...base, text }))
-        .catch(() => arr.push({ ...base, text: null, skipped: true, skipReason: 'read error' }));
-    })).then(() => { renderFileList(lst, arr); updateSubmitState(); });
-  });
-});
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   Ingest — submit state
-   ═══════════════════════════════════════════════════════════════════════════ */
-function updateSubmitState() {
-  const btn = document.getElementById('submit-btn');
-  let ready = false;
-  if (activeTab === 'url')    ready = !!document.getElementById('url-input').value.trim();
-  if (activeTab === 'text')   ready = !!document.getElementById('text-content').value.trim();
-  if (activeTab === 'files')  ready = pendingFiles.some(f => !f.skipped);
-  if (activeTab === 'folder') ready = pendingFolderFiles.some(f => !f.skipped);
-  btn.disabled = !ready;
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   Ingest — pipeline UI
-   ═══════════════════════════════════════════════════════════════════════════ */
-function createJobCard(jobId, label) {
-  const el = document.createElement('div');
-  el.className = 'job-card';
-  el.id = `job-${jobId}`;
-  el.innerHTML = `
-    <div class="job-meta">
-      <div class="job-label" title="${label}">${label}</div>
-      <div class="job-status status-pending" id="jstatus-${jobId}">queued</div>
-    </div>
-    <div class="stage-rail" id="srail-${jobId}">
-      ${STAGES.filter(s => s !== 'queued').map(s => `
-        <div class="stage-node sn-pending" id="sn-${jobId}-${s}">
-          <div class="stage-dot"></div>
-          <div class="stage-label">${s}</div>
-        </div>
-      `).join('')}
-    </div>
-    <div class="job-progress-bar-wrap">
-      <div class="job-progress-bar" id="jpbar-${jobId}" style="width:0%"></div>
-    </div>
-  `;
-  return el;
-}
-
-function updateJobStage(jobId, stage, errorMsg) {
-  const job = ingestJobs.get(jobId);
-  if (!job) return;
-
-  job.stage = stage;
-  if (errorMsg) job.error = errorMsg;
-
-  const statusEl = document.getElementById(`jstatus-${jobId}`);
-  const pbarEl   = document.getElementById(`jpbar-${jobId}`);
-  if (!statusEl) return;
-
-  const isDone   = stage === 'done';
-  const isError  = stage === 'error';
-  const isActive = ACTIVE_STAGES.has(stage);
-
-  statusEl.className   = `job-status ${isDone ? 'status-done' : isError ? 'status-error' : isActive ? 'status-active' : 'status-pending'}`;
-  statusEl.textContent = stage;
-
-  const stagesForBar = STAGES.filter(s => s !== 'queued');
-  const curIdx = stagesForBar.indexOf(stage);
-  const pct = isDone ? 100
-    : isError   ? (curIdx >= 0 ? Math.round((curIdx / stagesForBar.length) * 100) : 0)
-    : (curIdx >= 0 ? Math.round(((curIdx + 0.5) / stagesForBar.length) * 100) : 0);
-  pbarEl.style.width = pct + '%';
-  pbarEl.className   = `job-progress-bar ${isDone ? '' : isError ? 'pb-error' : 'pb-active'}`;
-
-  STAGES.filter(s => s !== 'queued').forEach(s => {
-    const node = document.getElementById(`sn-${jobId}-${s}`);
-    if (!node) return;
-    const sIdx = STAGE_IDX[s];
-    const cur  = isError
-      ? (STAGE_IDX[stage] ?? STAGE_IDX[job.priorStage ?? 'queued'])
-      : STAGE_IDX[stage];
-    node.className = 'stage-node ' + (
-      isDone                              ? 'sn-done'   :
-      isError && s === 'error'            ? 'sn-error'  :
-      isError && sIdx < cur               ? 'sn-done'   :
-      !isError && sIdx < STAGE_IDX[stage] ? 'sn-done'   :
-      !isError && s === stage             ? 'sn-active'  :
-      'sn-pending'
-    );
-  });
-
-  const existingErr = document.getElementById(`jerr-${jobId}`);
-  if (isError && errorMsg) {
-    if (!existingErr) {
-      const errEl = document.createElement('div');
-      errEl.className   = 'job-error-msg';
-      errEl.id          = `jerr-${jobId}`;
-      errEl.textContent = errorMsg;
-      document.getElementById(`job-${jobId}`).appendChild(errEl);
-    }
-  } else if (existingErr) {
-    existingErr.remove();
-  }
-
-  if (!isError) job.priorStage = stage;
-  checkCompletion();
-}
-
-function checkCompletion() {
-  if (ingestJobs.size === 0) return;
-  const all     = [...ingestJobs.values()];
-  const settled = all.filter(j => j.stage === 'done' || j.stage === 'error');
-  const errors  = all.filter(j => j.stage === 'error');
-  updateJobCountLabel();
-  if (settled.length < all.length) return;
-
-  const resultSection = document.getElementById('result-section');
-  const resultIcon    = document.getElementById('result-icon');
-  const resultTitle   = document.getElementById('result-title');
-  const resultSub     = document.getElementById('result-sub');
-  resultSection.classList.add('visible');
-  document.getElementById('pipeline-empty').style.display = 'none';
-
-  if (errors.length === 0) {
-    resultIcon.textContent  = '✓';
-    resultIcon.style.color  = 'var(--teal)';
-    resultTitle.textContent = all.length === 1 ? 'Ingestion complete' : `${all.length} items ingested`;
-    resultSub.textContent   = 'All items processed and indexed. Explore the knowledge graph.';
-  } else if (errors.length === all.length) {
-    resultIcon.textContent  = '✕';
-    resultIcon.style.color  = 'var(--coral)';
-    resultTitle.textContent = 'Ingestion failed';
-    resultSub.textContent   = `${errors.length} item${errors.length > 1 ? 's' : ''} encountered errors. Check labels above for details.`;
-  } else {
-    resultIcon.textContent  = '⚠';
-    resultIcon.style.color  = 'var(--amber)';
-    resultTitle.textContent = `${all.length - errors.length} of ${all.length} items ingested`;
-    resultSub.textContent   = `${errors.length} item${errors.length > 1 ? 's' : ''} failed. Successful items are available in the graph.`;
-  }
-}
-
-function updateJobCountLabel() {
-  const all     = [...ingestJobs.values()];
-  const done    = all.filter(j => j.stage === 'done').length;
-  const errored = all.filter(j => j.stage === 'error').length;
-  const running = all.filter(j => j.stage !== 'done' && j.stage !== 'error').length;
-  const lbl     = document.getElementById('job-count-label');
-  if (all.length === 0) { lbl.textContent = ''; return; }
-  const parts = [];
-  if (running) parts.push(`${running} running`);
-  if (done)    parts.push(`${done} done`);
-  if (errored) parts.push(`${errored} error`);
-  lbl.textContent = parts.join(' · ');
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   Ingest — submit
-   ═══════════════════════════════════════════════════════════════════════════ */
-document.getElementById('submit-btn').addEventListener('click', async () => {
-  const btn = document.getElementById('submit-btn');
-  btn.disabled    = true;
-  btn.textContent = 'Submitting…';
-  document.getElementById('result-section').classList.remove('visible');
-  document.getElementById('pipeline-empty').style.display = 'none';
-  try {
-    if      (activeTab === 'url')    await submitURL();
-    else if (activeTab === 'text')   await submitText();
-    else if (activeTab === 'files')  await submitFiles(pendingFiles, document.getElementById('files-tag').value.trim());
-    else if (activeTab === 'folder') await submitFiles(pendingFolderFiles, document.getElementById('folder-tag').value.trim());
-  } catch (err) {
-    console.error(err);
-    alert('Submission error: ' + err.message);
-  } finally {
-    btn.disabled    = false;
-    btn.textContent = 'Ingest';
-    updateSubmitState();
-  }
-});
-
-async function postIngest(payload) {
-  const res  = await fetch('/ingest', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  const json = await res.json();
-  if (!json.ok) throw new Error(json.error || 'Unknown server error');
-  return json.data;
-}
-
-function registerJob(jobId, entityId, label) {
-  const emptyEl = document.getElementById('pipeline-empty');
-  emptyEl.style.display = 'none';
-  const card = createJobCard(jobId, label);
-  document.getElementById('pipeline-body').insertBefore(card, emptyEl);
-  ingestJobs.set(jobId, { stage: 'queued', label, entityId, error: null, priorStage: null });
-  updateJobCountLabel();
-  pollJob(jobId);
-}
-
-async function submitURL() {
-  const url   = document.getElementById('url-input').value.trim();
-  const tag   = document.getElementById('url-tag').value.trim();
-  const title = document.getElementById('url-title').value.trim();
-  const meta  = {};
-  if (tag)   meta.tag   = tag;
-  if (title) meta.title = title;
-  const d = await postIngest({ type: 'url', ref: url, meta });
-  registerJob(d.job_id, d.entity_id, url);
-  document.getElementById('url-input').value  = '';
-  document.getElementById('url-tag').value    = '';
-  document.getElementById('url-title').value  = '';
-}
-
-async function submitText() {
-  const text  = document.getElementById('text-content').value.trim();
-  const title = document.getElementById('text-title').value.trim() || 'Untitled note';
-  const tag   = document.getElementById('text-tag').value.trim();
-  const meta  = { title };
-  if (tag) meta.tag = tag;
-  const d = await postIngest({ type: 'note', text, meta });
-  registerJob(d.job_id, d.entity_id, title);
-  document.getElementById('text-content').value = '';
-  document.getElementById('text-title').value   = '';
-  document.getElementById('text-tag').value     = '';
-}
-
-async function submitFiles(fileArr, tag) {
-  for (const f of fileArr) {
-    if (f.skipped) continue;
-    const meta = { filename: f.name, path: f.path };
-    if (tag) meta.tag = tag;
-    const d = await postIngest({ type: 'doc', text: f.text, meta });
-    registerJob(d.job_id, d.entity_id, f.name);
-  }
-  if (activeTab === 'files') {
-    pendingFiles.length = 0;
-    renderFileList(filesList, pendingFiles);
-  } else {
-    pendingFolderFiles.length = 0;
-    renderFileList(folderList, pendingFolderFiles);
-  }
-}
-
-async function pollJob(jobId) {
-  const interval = setInterval(async () => {
-    const job = ingestJobs.get(jobId);
-    if (!job || job.stage === 'done' || job.stage === 'error') {
-      clearInterval(interval);
-      return;
-    }
-    try {
-      const res  = await fetch('/jobs?kind=ingest&limit=200');
-      const data = await res.json();
-      if (!data.ok) return;
-      const found = data.data.jobs.find(j => j.id === jobId);
-      if (!found || found.stage === job.stage) return;
-      const errMsg = found.stage === 'error'
-        ? (found.progress?.error_detail ?? 'Pipeline error')
-        : null;
-      updateJobStage(jobId, found.stage, errMsg);
-    } catch { /* ignore network errors */ }
-  }, 2000);
-}
-
-document.getElementById('start-again-btn').addEventListener('click', () => {
-  ingestJobs.clear();
-  document.getElementById('pipeline-body').querySelectorAll('.job-card').forEach(el => el.remove());
-  document.getElementById('pipeline-empty').style.display = '';
-  document.getElementById('result-section').classList.remove('visible');
-  updateJobCountLabel();
-  updateSubmitState();
-});
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   Remediation
-   ═══════════════════════════════════════════════════════════════════════════ */
-let remItems = [];
-
-document.getElementById('rem-card-header').addEventListener('click', () => {
-  const body    = document.getElementById('rem-body');
-  const chevron = document.getElementById('rem-chevron');
-  const header  = document.getElementById('rem-card-header');
-  const open    = body.classList.toggle('open');
-  chevron.classList.toggle('open', open);
-  header.classList.toggle('open', open);
-  header.setAttribute('aria-expanded', String(open));
-});
-
-function fmtRemLabel(item) {
-  if (item.ref) return item.ref;
-  const filename = item.meta?.filename || item.meta?.title || null;
-  if (filename) return String(filename);
-  return item.id.slice(0, 8) + '…';
-}
-
-function remedyLabel(r) {
-  if (r === 'reingest') return 'needs repair';
-  if (r === 'stuck')    return 'stuck';
-  return 'no raw — delete only';
-}
-
-function renderRemTable(items) {
-  const content      = document.getElementById('rem-content');
-  const lbl          = document.getElementById('rem-toolbar-label');
-  const repairAllBtn = document.getElementById('rem-repair-all-btn');
-  const deleteAllBtn = document.getElementById('rem-delete-all-btn');
-
-  if (items.length === 0) {
-    content.innerHTML = '<div class="rem-empty" style="color:var(--teal)">✓ No broken ingestions found.</div>';
-    lbl.textContent       = 'All clear.';
-    repairAllBtn.disabled = true;
-    deleteAllBtn.disabled = true;
-    updateRemBadge(0, true);
-    return;
-  }
-
-  const repairable = items.filter(i => i.remedy !== 'no_raw');
-  lbl.textContent       = `${items.length} issue${items.length !== 1 ? 's' : ''} found · ${repairable.length} repairable`;
-  repairAllBtn.disabled = repairable.length === 0;
-  deleteAllBtn.disabled = false;
-  updateRemBadge(items.length, false);
-
-  const tbl = document.createElement('table');
-  tbl.className = 'rem-table';
-  tbl.innerHTML = `
-    <thead>
-      <tr>
-        <th>Source</th><th>Type</th><th>Status</th><th>Chunks</th>
-        <th>Last stage</th><th>Diagnosis</th><th>Actions</th>
-      </tr>
-    </thead>
-    <tbody id="rem-tbody"></tbody>
-  `;
-  content.innerHTML = '';
-  content.appendChild(tbl);
-
-  const tbody = document.getElementById('rem-tbody');
-  items.forEach(item => {
-    const tr        = document.createElement('tr');
-    tr.id           = `rem-row-${item.id}`;
-    const lastStage = item.latest_job?.stage ?? '—';
-    const errTip    = item.latest_job?.error
-      ? ` title="${item.latest_job.error.replace(/"/g, '&quot;')}"`
-      : '';
-    tr.innerHTML = `
-      <td><div class="rem-ref"${errTip}>${fmtRemLabel(item)}</div></td>
-      <td>${item.type}</td>
-      <td>${item.status}</td>
-      <td>${item.chunk_count}</td>
-      <td>${lastStage}</td>
-      <td><span class="rem-remedy r-${item.remedy}">${remedyLabel(item.remedy)}</span></td>
-      <td><div class="rem-action-cell">
-        <button class="ra-repair" data-id="${item.id}"
-          ${item.remedy === 'no_raw' ? 'disabled title="No raw content — cannot repair"' : ''}>Repair</button>
-        <button class="ra-delete" data-id="${item.id}">Delete</button>
-      </div></td>
-    `;
-    tbody.appendChild(tr);
-  });
-
-  tbody.querySelectorAll('.ra-repair').forEach(btn => btn.addEventListener('click', () => repairOne(btn.dataset.id)));
-  tbody.querySelectorAll('.ra-delete').forEach(btn => btn.addEventListener('click', () => deleteOne(btn.dataset.id)));
-}
-
-function updateRemBadge(count, ok) {
-  const badge = document.getElementById('rem-badge');
-  if (count === 0 && ok) {
-    badge.textContent = 'all clear';
-    badge.className   = 'rem-badge b-ok';
-  } else if (count > 0) {
-    badge.textContent = `${count} issue${count !== 1 ? 's' : ''}`;
-    badge.className   = 'rem-badge';
-  } else {
-    badge.textContent = 'not scanned';
-    badge.className   = 'rem-badge b-none';
-  }
-}
-
-async function scanBroken() {
-  const btn = document.getElementById('rem-scan-btn');
-  btn.disabled    = true;
-  btn.textContent = 'Scanning…';
-  try {
-    const res  = await fetch('/entities/broken');
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error);
-    remItems = data.data.broken;
-    renderRemTable(remItems);
-  } catch (err) {
-    document.getElementById('rem-content').innerHTML =
-      `<div class="rem-empty" style="color:var(--coral)">Scan failed: ${err.message}</div>`;
-    updateRemBadge(0, false);
-  } finally {
-    btn.disabled    = false;
-    btn.textContent = 'Scan now';
-  }
-}
-
-async function repairOne(entityId) {
-  const row    = document.getElementById(`rem-row-${entityId}`);
-  const repBtn = row?.querySelector('.ra-repair');
-  const delBtn = row?.querySelector('.ra-delete');
-  if (repBtn) { repBtn.disabled = true; repBtn.textContent = '…'; }
-  if (delBtn) delBtn.disabled = true;
-  try {
-    const res  = await fetch('/reingest', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ entity_id: entityId }),
-    });
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error);
-    remItems = remItems.filter(i => i.id !== entityId);
-    if (row) row.remove();
-    updateRemBadge(remItems.length, remItems.length === 0);
-  } catch (err) {
-    if (repBtn) { repBtn.disabled = false; repBtn.textContent = 'Repair'; }
-    if (delBtn) delBtn.disabled = false;
-    alert(`Repair failed: ${err.message}`);
-  }
-}
-
-async function deleteOne(entityId) {
-  const row    = document.getElementById(`rem-row-${entityId}`);
-  const repBtn = row?.querySelector('.ra-repair');
-  const delBtn = row?.querySelector('.ra-delete');
-  const lbl    = document.getElementById('rem-toolbar-label');
-  if (repBtn) repBtn.disabled = true;
-  if (delBtn) { delBtn.disabled = true; delBtn.textContent = '…'; }
-  try {
-    const res  = await fetch(`/entities/${entityId}`, { method: 'DELETE' });
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error);
-    remItems = remItems.filter(i => i.id !== entityId);
-    if (row) row.remove();
-    const repairable = remItems.filter(i => i.remedy !== 'no_raw');
-    if (lbl) lbl.textContent = remItems.length > 0
-      ? `${remItems.length} issue${remItems.length !== 1 ? 's' : ''} found · ${repairable.length} repairable`
-      : 'All clear.';
-    document.getElementById('rem-repair-all-btn').disabled = repairable.length === 0;
-    document.getElementById('rem-delete-all-btn').disabled = remItems.length === 0;
-    updateRemBadge(remItems.length, remItems.length === 0);
-  } catch (err) {
-    if (repBtn && !repBtn.hasAttribute('disabled')) repBtn.disabled = false;
-    if (delBtn) { delBtn.disabled = false; delBtn.textContent = 'Delete'; }
-    alert(`Delete failed: ${err.message}`);
-  }
-}
-
-document.getElementById('rem-repair-all-btn').addEventListener('click', async () => {
-  const repairable = remItems.filter(i => i.remedy !== 'no_raw');
-  const btn = document.getElementById('rem-repair-all-btn');
-  btn.disabled    = true;
-  btn.textContent = 'Repairing…';
-  for (const item of repairable) await repairOne(item.id);
-  btn.textContent = 'Repair all';
-});
-
-document.getElementById('rem-delete-all-btn').addEventListener('click', async () => {
-  if (!confirm(`Delete all ${remItems.length} broken entities? This cannot be undone.`)) return;
-  const btn = document.getElementById('rem-delete-all-btn');
-  btn.disabled    = true;
-  btn.textContent = 'Deleting…';
-  const copy = [...remItems];
-  for (const item of copy) await deleteOne(item.id);
-  btn.textContent = 'Delete all';
-});
-
-document.getElementById('rem-scan-btn').addEventListener('click', scanBroken);
-</script>
+<script type="module" src="/app.js"></script>
 </body>
 </html>
