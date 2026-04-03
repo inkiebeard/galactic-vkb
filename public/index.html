@@ -212,10 +212,14 @@
   .drop-zone input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
   .drop-zone .dz-icon { font-size: 24px; line-height: 1; margin-bottom: 8px; display: block; }
   .drop-zone .dz-hint { color: var(--hint); font-size: 10px; margin-top: 4px; }
-  .file-list { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; max-height: 140px; overflow-y: auto; }
+  .file-list { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto; }
   .file-item { display: flex; align-items: center; gap: 8px; background: var(--bg); border: 0.5px solid var(--line); border-radius: 4px; padding: 5px 8px; font-size: 10px; color: var(--muted); }
-  .file-item .fi-name   { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-item.fi-skipped { opacity: 0.5; border-style: dashed; }
+  .file-item .fi-info   { flex: 1; overflow: hidden; min-width: 0; }
+  .file-item .fi-name   { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+  .file-item .fi-path   { display: block; font-size: 9px; color: var(--hint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 1px; }
   .file-item .fi-size   { color: var(--hint); flex-shrink: 0; }
+  .fi-skip-chip { font-size: 9px; padding: 1px 6px; border-radius: 3px; background: rgba(255,255,255,0.05); color: var(--hint); flex-shrink: 0; white-space: nowrap; }
   .file-item .fi-remove { background: none; border: none; color: var(--hint); cursor: pointer; font-size: 12px; line-height: 1; padding: 0 2px; flex-shrink: 0; }
   .file-item .fi-remove:hover { color: var(--coral); }
   .meta-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
@@ -503,10 +507,10 @@
           <!-- Files tab -->
           <div class="tab-pane" id="tab-files">
             <div class="drop-zone" id="files-drop">
-              <input type="file" id="files-input" multiple accept=".txt,.md,.markdown,.html,.htm,.csv,.json,.xml,.rst,.org,.tex">
+              <input type="file" id="files-input" multiple accept=".txt,.md,.markdown,.html,.htm,.csv,.json,.xml,.rst,.org,.tex,.js,.ts,.py,.rb,.go,.rs,.c,.cpp,.h,.java,.kt,.swift,.sql,.yaml,.yml,.toml,.sh,.epub,.pdf,.docx,.rtf">
               <span class="dz-icon">📄</span>
               Click to select or drop files here
-              <div class="dz-hint">.txt · .md · .html · .csv · .json · .xml and more</div>
+              <div class="dz-hint">.txt · .md · .html · .csv · .json · .epub · and more — unsupported formats shown as skipped</div>
             </div>
             <div class="file-list" id="files-list"></div>
             <div class="meta-row">
@@ -523,7 +527,7 @@
               <input type="file" id="folder-input" webkitdirectory multiple>
               <span class="dz-icon">📁</span>
               Click to select a folder
-              <div class="dz-hint">All readable text files inside will be ingested</div>
+              <div class="dz-hint">Text files will be ingested — unsupported formats shown as skipped</div>
             </div>
             <div class="file-list" id="folder-list"></div>
             <div class="meta-row">
@@ -759,6 +763,21 @@ function fmtSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
+function escHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// Best-effort name normalisation: strip extension, turn separators into spaces,
+// drop any remaining non-alphanumeric characters, collapse whitespace.
+function normaliseName(filename) {
+  return filename
+    .replace(/\.[^.]+$/, '')          // strip extension
+    .replace(/[-_./ \\]+/g, ' ')      // separators → space
+    .replace(/[^a-zA-Z0-9 ]/g, '')    // drop non-alphanumeric
+    .replace(/\s+/g, ' ')             // collapse whitespace
+    .trim();
+}
+
 function isTextFile(name) {
   return /\.(txt|md|markdown|html?|csv|json|xml|rst|org|tex|js|ts|py|rb|go|rs|c|cpp|h|java|kt|swift|sql|yaml|yml|toml|sh|bash|zsh|ps1|r|jl|lua|pl|php)$/i.test(name);
 }
@@ -775,11 +794,19 @@ async function readFileText(file) {
 function renderFileList(listEl, files) {
   listEl.innerHTML = '';
   files.forEach((f, i) => {
-    const item = document.createElement('div');
-    item.className = 'file-item';
+    const item    = document.createElement('div');
+    item.className = f.skipped ? 'file-item fi-skipped' : 'file-item';
+    const label   = escHtml(f.displayName || normaliseName(f.name));
+    const hasPath = f.path && f.path !== f.name;
+    const subPath = hasPath ? `<span class="fi-path">${escHtml(f.path)}</span>` : '';
+    const rightSide = f.skipped
+      ? `<span class="fi-skip-chip" title="${escHtml(f.skipReason || 'unsupported format')}">skipped</span>`
+      : `<span class="fi-size">${fmtSize(f.size)}</span>`;
     item.innerHTML = `
-      <span class="fi-name" title="${f.name}">${f.name}</span>
-      <span class="fi-size">${fmtSize(f.size)}</span>
+      <span class="fi-info" title="${escHtml(f.name)}">
+        <span class="fi-name">${label}</span>${subPath}
+      </span>
+      ${rightSide}
       <button class="fi-remove" data-idx="${i}" title="Remove">✕</button>
     `;
     listEl.appendChild(item);
@@ -796,12 +823,19 @@ function renderFileList(listEl, files) {
 }
 
 async function handleFileSelection(input, targetArr, listEl) {
-  const rawFiles = Array.from(input.files || []).filter(f => isTextFile(f.name));
+  const rawFiles = Array.from(input.files || []);
   for (const f of rawFiles) {
+    if (!isTextFile(f.name)) {
+      targetArr.push({ name: f.name, displayName: normaliseName(f.name), size: f.size, text: null, path: f.webkitRelativePath || f.name, skipped: true, skipReason: 'unsupported format' });
+      continue;
+    }
     try {
       const text = await readFileText(f);
-      targetArr.push({ name: f.name, size: f.size, text, path: f.webkitRelativePath || f.name });
-    } catch (err) { console.warn('Skipped', f.name, err.message); }
+      targetArr.push({ name: f.name, displayName: normaliseName(f.name), size: f.size, text, path: f.webkitRelativePath || f.name });
+    } catch (err) {
+      console.warn('Skipped', f.name, err.message);
+      targetArr.push({ name: f.name, displayName: normaliseName(f.name), size: f.size, text: null, path: f.webkitRelativePath || f.name, skipped: true, skipReason: 'read error' });
+    }
   }
   renderFileList(listEl, targetArr);
   updateSubmitState();
@@ -826,9 +860,16 @@ folderInput.addEventListener('change', () => handleFileSelection(folderInput, pe
     if (!dt || !dt.files.length) return;
     const arr = id === 'files-drop' ? pendingFiles : pendingFolderFiles;
     const lst = id === 'files-drop' ? filesList    : folderList;
-    const rawFiles = Array.from(dt.files).filter(f => isTextFile(f.name));
-    Promise.all(rawFiles.map(f => readFileText(f).then(text => arr.push({ name: f.name, size: f.size, text, path: f.name }))))
-      .then(() => { renderFileList(lst, arr); updateSubmitState(); });
+    const rawFiles = Array.from(dt.files);
+    Promise.all(rawFiles.map(f => {
+      if (!isTextFile(f.name)) {
+        arr.push({ name: f.name, displayName: normaliseName(f.name), size: f.size, text: null, path: f.name, skipped: true, skipReason: 'unsupported format' });
+        return;
+      }
+      return readFileText(f)
+        .then(text => arr.push({ name: f.name, displayName: normaliseName(f.name), size: f.size, text, path: f.name }))
+        .catch(err => arr.push({ name: f.name, displayName: normaliseName(f.name), size: f.size, text: null, path: f.name, skipped: true, skipReason: 'read error' }));
+    })).then(() => { renderFileList(lst, arr); updateSubmitState(); });
   });
 });
 
@@ -840,8 +881,8 @@ function updateSubmitState() {
   let ready = false;
   if (activeTab === 'url')    ready = !!document.getElementById('url-input').value.trim();
   if (activeTab === 'text')   ready = !!document.getElementById('text-content').value.trim();
-  if (activeTab === 'files')  ready = pendingFiles.length > 0;
-  if (activeTab === 'folder') ready = pendingFolderFiles.length > 0;
+  if (activeTab === 'files')  ready = pendingFiles.some(f => !f.skipped);
+  if (activeTab === 'folder') ready = pendingFolderFiles.some(f => !f.skipped);
   btn.disabled = !ready;
 }
 
@@ -1053,6 +1094,7 @@ async function submitText() {
 
 async function submitFiles(fileArr, tag) {
   for (const f of fileArr) {
+    if (f.skipped) continue;
     const meta = { filename: f.name, path: f.path };
     if (tag) meta.tag = tag;
     const d = await postIngest({ type: 'doc', text: f.text, meta });
