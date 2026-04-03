@@ -305,12 +305,14 @@ export function startObsServer(adapters: Adapters): void {
       const { kind, stage, limit = '50' } = req.query as Record<string, string>;
       const params: unknown[] = [];
       const where: string[] = [];
-      if (kind)  { params.push(kind);  where.push(`kind = $${params.length}`); }
-      if (stage) { params.push(stage); where.push(`stage = $${params.length}`); }
+      if (kind)  { params.push(kind);  where.push(`j.kind = $${params.length}`); }
+      if (stage) { params.push(stage); where.push(`j.stage = $${params.length}`); }
       const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
       const lim = Math.min(200, parseInt(limit, 10) || 50);
       const { rows } = await db.query(
-        `SELECT * FROM job ${whereClause} ORDER BY created_at DESC LIMIT $${params.length+1}`,
+        `SELECT j.*, e.ref, e.meta FROM job j
+         LEFT JOIN entity e ON e.id = j.entity_id
+         ${whereClause} ORDER BY j.created_at DESC LIMIT $${params.length+1}`,
         [...params, lim],
       );
       res.json({ ok: true, data: { jobs: rows } });

@@ -448,6 +448,72 @@
   }
   .ws-dot.connected { background: var(--teal); }
 
+  /* ── Archived jobs panel ─────────────────────────────────────── */
+  #archived-panel {
+    margin-top: 12px;
+  }
+  .archived-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: none;
+    border: none;
+    color: var(--hint);
+    font-family: var(--mono);
+    font-size: 10px;
+    cursor: pointer;
+    padding: 6px 0;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    width: 100%;
+    text-align: left;
+    transition: color 0.15s;
+  }
+  .archived-toggle:hover { color: var(--muted); }
+  .archived-toggle .arc-badge {
+    background: var(--card2);
+    border: 0.5px solid var(--line2);
+    border-radius: 10px;
+    padding: 1px 7px;
+    font-size: 9px;
+    color: var(--hint);
+  }
+  .archived-toggle .arc-caret { margin-left: auto; transition: transform 0.2s; }
+  .archived-toggle.open .arc-caret { transform: rotate(180deg); }
+
+  .archived-body {
+    display: none;
+    background: var(--card);
+    border: 0.5px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .archived-body.open { display: block; }
+
+  .archive-empty {
+    padding: 24px 16px;
+    text-align: center;
+    font-size: 11px;
+    color: var(--hint);
+  }
+
+  .arc-clear-btn {
+    background: none;
+    border: none;
+    color: var(--hint);
+    font-family: var(--mono);
+    font-size: 10px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 3px;
+    transition: color 0.15s;
+  }
+  .arc-clear-btn:hover { color: var(--coral); }
+
+  /* job-card inside archive has slightly dimmed style */
+  .archived-body .job-card { opacity: 0.75; }
+  .archived-body .job-card:hover { opacity: 1; }
+
   /* ── Scrollbar ───────────────────────────────────────────────── */
   ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -587,6 +653,23 @@
         </div>
       </div>
     </div>
+
+    <!-- Archived jobs -->
+    <div id="archived-panel">
+      <button class="archived-toggle" id="archived-toggle" aria-expanded="false">
+        Archived jobs
+        <span class="arc-badge" id="arc-badge">0</span>
+        <span class="arc-caret">▼</span>
+      </button>
+      <div class="archived-body" id="archived-body">
+        <div style="display:flex;align-items:center;justify-content:flex-end;padding:8px 12px;border-bottom:0.5px solid var(--line)">
+          <button class="arc-clear-btn" id="arc-clear-btn">Clear all</button>
+        </div>
+        <div id="archived-list">
+          <div class="archive-empty" id="archive-empty">No archived jobs yet.</div>
+        </div>
+      </div>
+    </div>
   </div>
 </main>
 
@@ -615,14 +698,55 @@
 const STAGES = ['queued','fetching','chunking','embedding','sectioning','summarising','extracting','done'];
 const STAGE_IDX = Object.fromEntries(STAGES.map((s,i) => [s,i]));
 const ACTIVE_STAGES = new Set(['queued','fetching','chunking','embedding','sectioning','summarising','extracting']);
+const ARCHIVE_DELAY_MS = 30_000; // 30 s after settle → move to archive
+const ARCHIVE_LS_KEY   = 'vkb_archived_jobs';
 
-// jobs: Map<jobId, { label, stage, error, entityId, element }>
+// jobs: Map<jobId, { label, stage, error, entityId, priorStage }>
 const jobs = new Map();
+// archiveTimers: Map<jobId, timeoutId>
+const archiveTimers = new Map();
+
 let ws = null;
 let wsConnected = false;
 let activeTab = 'url';
 let pendingFiles = []; // {name, size, text, tag}
 let pendingFolderFiles = [];
+
+/* ── Archive persistence ────────────────────────────────────────────────────── */
+function loadArchive() {
+  try { return JSON.parse(localStorage.getItem(ARCHIVE_LS_KEY) || '[]'); }
+  catch { return []; }
+}
+function saveArchive(arr) {
+  try { localStorage.setItem(ARCHIVE_LS_KEY, JSON.stringify(arr)); } catch {}
+}
+function archiveJob(jobId) {
+  const job = jobs.get(jobId);
+  if (!job) return;
+  archiveTimers.delete(jobId);
+
+  const archived = loadArchive();
+  // Avoid duplicates
+  if (!archived.find(a => a.id === jobId)) {
+    archived.unshift({ id: jobId, label: job.label, stage: job.stage, error: job.error ?? null, archivedAt: Date.now() });
+    if (archived.length > 200) archived.splice(200);
+    saveArchive(archived);
+  }
+
+  // Remove from active pipeline
+  jobs.delete(jobId);
+  const cardEl = document.getElementById(`job-${jobId}`);
+  if (cardEl) cardEl.remove();
+
+  updateJobCountLabel();
+  checkCompletion();
+  renderArchive();
+}
+function scheduleArchive(jobId) {
+  if (archiveTimers.has(jobId)) return; // already scheduled
+  const tid = setTimeout(() => archiveJob(jobId), ARCHIVE_DELAY_MS);
+  archiveTimers.set(jobId, tid);
+}
 
 /* ── Utilities ──────────────────────────────────────────────────────────────── */
 function fmtSize(bytes) {
@@ -635,6 +759,41 @@ function isTextFile(name) {
   return /\.(txt|md|markdown|html?|csv|json|xml|rst|org|tex|js|ts|py|rb|go|rs|c|cpp|h|java|kt|swift|sql|yaml|yml|toml|sh|bash|zsh|ps1|r|jl|lua|pl|php)$/i.test(name);
 }
 
+function jobLabelFromRecord(j) {
+  const meta = j.meta ?? {};
+  return meta.title || meta.filename || j.ref || j.entity_id?.slice(0, 8) || j.id.slice(0, 8);
+}
+
+/* ── Hydrate live jobs from server ──────────────────────────────────────────── */
+async function hydrateLiveJobs() {
+  try {
+    const res  = await fetch('/jobs?limit=200');
+    const data = await res.json();
+    if (!data.ok) return;
+    const archived = loadArchive();
+    const archivedIds = new Set(archived.map(a => a.id));
+    for (const j of data.data.jobs) {
+      // Skip jobs already in archive or already tracked
+      if (archivedIds.has(j.id) || jobs.has(j.id)) continue;
+      // Only show unsettled jobs or jobs settled within the last 5 minutes
+      const settledStages = new Set(['done', 'error']);
+      const isSettled = settledStages.has(j.stage);
+      const settledAt = j.completed_at ?? j.created_at;
+      const ageMs = Date.now() - new Date(settledAt).getTime();
+      if (isSettled && ageMs > 5 * 60 * 1000) continue;
+
+      const label   = jobLabelFromRecord(j);
+      const errMsg  = j.stage === 'error' ? (j.progress?.error_detail ?? null) : null;
+      registerJob(j.id, j.entity_id, label, /* skipPoll */ true);
+      // Advance stage immediately from 'queued' to actual current stage
+      if (j.stage !== 'queued') {
+        updateJobStage(j.id, j.stage, errMsg);
+      }
+      if (isSettled) scheduleArchive(j.id);
+    }
+  } catch { /* ignore */ }
+}
+
 /* ── WebSocket ──────────────────────────────────────────────────────────────── */
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -645,6 +804,7 @@ function connectWS() {
     document.getElementById('ws-dot').classList.add('connected');
     document.getElementById('ws-label').textContent = 'live';
     document.getElementById('ws-label').style.color = 'var(--teal)';
+    hydrateLiveJobs();
   });
 
   ws.addEventListener('close', () => {
@@ -657,10 +817,28 @@ function connectWS() {
 
   ws.addEventListener('error', () => ws.close());
 
-  ws.addEventListener('message', e => {
+  ws.addEventListener('message', async e => {
     let msg;
     try { msg = JSON.parse(e.data); } catch { return; }
     if (!msg || !msg.job_id) return;
+
+    // If this job is not yet tracked, fetch its record and register it
+    if (!jobs.has(msg.job_id)) {
+      try {
+        const res  = await fetch(`/jobs?limit=200`);
+        const data = await res.json();
+        if (data.ok) {
+          const j = data.data.jobs.find(r => r.id === msg.job_id);
+          if (j) {
+            const archived = loadArchive();
+            if (!archived.find(a => a.id === j.id)) {
+              registerJob(j.id, j.entity_id, jobLabelFromRecord(j), /* skipPoll */ true);
+            }
+          }
+        }
+      } catch { return; }
+    }
+
     const job = jobs.get(msg.job_id);
     if (!job) return;
 
@@ -762,9 +940,6 @@ folderInput.addEventListener('change', () => handleFileSelection(folderInput, pe
   zone.addEventListener('drop', e => {
     e.preventDefault();
     zone.classList.remove('drag-over');
-    // Let the file input handle it via the same handler
-    const inp = zone.querySelector('input[type="file"]');
-    // DataTransfer.files cannot be assigned; trigger via synthetic File constructor then array
     const dt = e.dataTransfer;
     if (dt && dt.files.length) {
       const arr = id === 'files-drop' ? pendingFiles : pendingFolderFiles;
@@ -821,11 +996,9 @@ function updateJobStage(jobId, stage, errorMsg) {
 
   const statusEl = document.getElementById(`jstatus-${jobId}`);
   const pbarEl   = document.getElementById(`jpbar-${jobId}`);
-  const railEl   = document.getElementById(`srail-${jobId}`);
 
   if (!statusEl) return;
 
-  // Status badge
   const isDone  = stage === 'done';
   const isError = stage === 'error';
   const isActive = ACTIVE_STAGES.has(stage);
@@ -833,14 +1006,12 @@ function updateJobStage(jobId, stage, errorMsg) {
   statusEl.className = `job-status ${isDone ? 'status-done' : isError ? 'status-error' : isActive ? 'status-active' : 'status-pending'}`;
   statusEl.textContent = stage;
 
-  // Progress bar
   const stagesForBar = STAGES.filter(s => s !== 'queued');
   const curIdx = stagesForBar.indexOf(stage);
   const pct = isDone ? 100 : isError ? (curIdx >= 0 ? Math.round((curIdx / stagesForBar.length) * 100) : 0) : (curIdx >= 0 ? Math.round(((curIdx + 0.5) / stagesForBar.length) * 100) : 0);
   pbarEl.style.width = pct + '%';
   pbarEl.className = `job-progress-bar ${isDone ? '' : isError ? 'pb-error' : 'pb-active'}`;
 
-  // Stage rail nodes
   const rails = STAGES.filter(s => s !== 'queued');
   rails.forEach(s => {
     const node = document.getElementById(`sn-${jobId}-${s}`);
@@ -857,7 +1028,6 @@ function updateJobStage(jobId, stage, errorMsg) {
     );
   });
 
-  // Error message
   const existingErr = document.getElementById(`jerr-${jobId}`);
   if (isError && errorMsg) {
     if (!existingErr) {
@@ -873,12 +1043,17 @@ function updateJobStage(jobId, stage, errorMsg) {
 
   if (!isError) job.priorStage = stage;
 
-  // Check overall completion
+  // Schedule archive for settled jobs
+  if (isDone || isError) scheduleArchive(jobId);
+
   checkCompletion();
 }
 
 function checkCompletion() {
-  if (jobs.size === 0) return;
+  if (jobs.size === 0) {
+    updateJobCountLabel();
+    return;
+  }
 
   const all     = [...jobs.values()];
   const settled = all.filter(j => j.stage === 'done' || j.stage === 'error');
@@ -968,7 +1143,7 @@ async function postIngest(payload) {
   return json.data; // { job_id, entity_id }
 }
 
-function registerJob(jobId, entityId, label) {
+function registerJob(jobId, entityId, label, skipPoll = false) {
   const emptyEl = document.getElementById('pipeline-empty');
   emptyEl.style.display = 'none';
 
@@ -977,8 +1152,7 @@ function registerJob(jobId, entityId, label) {
 
   jobs.set(jobId, { stage: 'queued', label, entityId, error: null, priorStage: null });
   updateJobCountLabel();
-  // Poll for job status in case WS misses events (e.g. if already processed before WS connects)
-  pollJob(jobId);
+  if (!skipPoll) pollJob(jobId);
 }
 
 async function submitURL() {
@@ -1012,11 +1186,9 @@ async function submitFiles(fileArr, tag) {
   for (const f of fileArr) {
     const meta = { filename: f.name, path: f.path };
     if (tag) meta.tag = tag;
-    // Send text only (no ref) — ref causes the pipeline to try fetching the local path as a URL
     const d = await postIngest({ type: 'doc', text: f.text, meta });
     registerJob(d.job_id, d.entity_id, f.name);
   }
-  // Clear
   if (activeTab === 'files') {
     pendingFiles.length = 0;
     renderFileList(filesList, pendingFiles);
@@ -1028,13 +1200,12 @@ async function submitFiles(fileArr, tag) {
 
 /* ── Job polling (fallback / catch-up) ──────────────────────────────────────── */
 async function pollJob(jobId) {
-  // Poll every 2 s until settled
   const interval = setInterval(async () => {
     const job = jobs.get(jobId);
     if (!job) { clearInterval(interval); return; }
     if (job.stage === 'done' || job.stage === 'error') { clearInterval(interval); return; }
     try {
-      const res = await fetch(`/jobs?kind=ingest&limit=200`);
+      const res = await fetch(`/jobs?limit=200`);
       const data = await res.json();
       if (!data.ok) return;
       const found = data.data.jobs.find(j => j.id === jobId);
@@ -1047,16 +1218,75 @@ async function pollJob(jobId) {
   }, 2000);
 }
 
+/* ── Archived jobs UI ───────────────────────────────────────────────────────── */
+function renderArchive() {
+  const archived   = loadArchive();
+  const badge      = document.getElementById('arc-badge');
+  const listEl     = document.getElementById('archived-list');
+  const emptyEl    = document.getElementById('archive-empty');
+
+  badge.textContent = String(archived.length);
+
+  listEl.innerHTML = '';
+  if (archived.length === 0) {
+    listEl.appendChild(emptyEl);
+    return;
+  }
+
+  archived.forEach(a => {
+    const isDone  = a.stage === 'done';
+    const isError = a.stage === 'error';
+    const statusCls = isDone ? 'status-done' : isError ? 'status-error' : 'status-pending';
+    const pct = isDone ? 100 : isError ? 40 : 0;
+    const pbarCls = isDone ? '' : 'pb-error';
+    const card = document.createElement('div');
+    card.className = 'job-card';
+    card.innerHTML = `
+      <div class="job-meta">
+        <div class="job-label" title="${a.label}">${a.label}</div>
+        <div class="job-status ${statusCls}">${a.stage}</div>
+      </div>
+      <div class="job-progress-bar-wrap">
+        <div class="job-progress-bar ${pbarCls}" style="width:${pct}%"></div>
+      </div>
+      ${a.error ? `<div class="job-error-msg">${a.error}</div>` : ''}
+    `;
+    listEl.appendChild(card);
+  });
+}
+
+document.getElementById('archived-toggle').addEventListener('click', () => {
+  const toggle = document.getElementById('archived-toggle');
+  const body   = document.getElementById('archived-body');
+  const open   = body.classList.toggle('open');
+  toggle.classList.toggle('open', open);
+  toggle.setAttribute('aria-expanded', String(open));
+  if (open) renderArchive();
+});
+
+document.getElementById('arc-clear-btn').addEventListener('click', () => {
+  saveArchive([]);
+  renderArchive();
+});
+
 /* ── Start again ────────────────────────────────────────────────────────────── */
 document.getElementById('start-again-btn').addEventListener('click', () => {
+  // Cancel pending archive timers and move settled jobs to archive immediately
+  for (const [jobId, job] of jobs.entries()) {
+    if (job.stage === 'done' || job.stage === 'error') {
+      const tid = archiveTimers.get(jobId);
+      if (tid) clearTimeout(tid);
+      archiveJob(jobId);
+    }
+  }
+  // Remove remaining active job cards from DOM
   jobs.clear();
-  const body = document.getElementById('pipeline-body');
-  // Remove all job cards
-  body.querySelectorAll('.job-card').forEach(el => el.remove());
+  document.getElementById('pipeline-body').querySelectorAll('.job-card').forEach(el => el.remove());
   document.getElementById('pipeline-empty').style.display = '';
   document.getElementById('result-section').classList.remove('visible');
   updateJobCountLabel();
   updateSubmitState();
+  renderArchive();
 });
 
 /* ── Nav menu ───────────────────────────────────────────────────────────────── */
@@ -1309,6 +1539,7 @@ document.getElementById('rem-delete-all-btn').addEventListener('click', async ()
 /* ── Boot ───────────────────────────────────────────────────────────────────── */
 connectWS();
 updateSubmitState();
+renderArchive(); // populate archive badge from localStorage on load
 </script>
 </body>
 </html>
