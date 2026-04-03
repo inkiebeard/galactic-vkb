@@ -1,0 +1,134 @@
+{
+  "manifest_version": "0.4",
+  "name": "vkb",
+  "display_name": "vkb — Vector Knowledge Base",
+  "version": "0.1.0",
+  "description": "Vector Knowledge Base — self-contained, local-first semantic memory system",
+  "long_description": "vkb is a graph-augmented vector knowledge base that runs entirely on your own machine. It ingests documents and URLs, chunks and embeds them via Ollama, stores vectors in Postgres+pgvector, and builds a typed knowledge graph (sequential, semantic, heuristic, and LLM-extracted relations). Exposed as an MCP server so any MCP-capable host (Claude Desktop, Claude CLI, etc.) can ingest documents, query semantically, traverse the knowledge graph, and inspect raw text — without sending your data to external services.",
+  "author": {
+    "name": "aaron"
+  },
+  "keywords": [
+    "knowledge-base",
+    "rag",
+    "vector-search",
+    "pgvector",
+    "ollama",
+    "semantic-search",
+    "knowledge-graph",
+    "memory",
+    "local-first"
+  ],
+  "license": "MIT",
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=22.0.0"
+    }
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/index.js"],
+      "env": {
+        "DATABASE_URL":    "${user:database_url}",
+        "OLLAMA_BASE_URL": "${user:ollama_base_url}",
+        "EMBED_MODEL":     "${user:embed_model}",
+        "LLM_MODEL":       "${user:llm_model}",
+        "RAWSTORE_PATH":   "${user:rawstore_path}",
+        "MCP_PORT":        "0",
+        "LOG_LEVEL":       "${user:log_level}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "vkb_ingest",
+      "description": "Submit raw text or a URL/file path for ingestion. Returns job_id and entity_id immediately; pipeline runs in background."
+    },
+    {
+      "name": "vkb_reingest",
+      "description": "Re-run the ingest pipeline from rawstore for one or all entities (re-chunks, re-embeds, re-summarises)."
+    },
+    {
+      "name": "vkb_job",
+      "description": "Poll a job by ID. Returns current pipeline stage, progress counters, and error detail if failed."
+    },
+    {
+      "name": "vkb_query",
+      "description": "Semantic vector search. Returns top-k chunks with summaries, entity context, similarity scores, section summaries, and relations."
+    },
+    {
+      "name": "vkb_get",
+      "description": "Fetch a full entity or chunk by UUID, including summaries, chunk list, sections, and all relations."
+    },
+    {
+      "name": "vkb_raw",
+      "description": "Fetch the raw original text for an entity or chunk from the filesystem rawstore."
+    },
+    {
+      "name": "vkb_relate",
+      "description": "Assert an explicit typed relation between any two entity or chunk IDs. Asserted relations are never pruned."
+    },
+    {
+      "name": "vkb_delete",
+      "description": "Delete an entity and cascade-remove all associated chunks, sections, relations, and rawstore files."
+    },
+    {
+      "name": "vkb_retune",
+      "description": "Trigger a retune sweep: rebuilds entity summaries, relation graph, and vector index. Returns a job_id for polling."
+    },
+    {
+      "name": "vkb_status",
+      "description": "Full system snapshot: entity/chunk/relation counts, job queue depth, worker state, active config, and vector index status."
+    }
+  ],
+  "user_config": {
+    "database_url": {
+      "type": "string",
+      "title": "Database URL",
+      "description": "PostgreSQL connection string for the vkb database (requires pgvector extension).",
+      "required": true,
+      "default": "postgres://vkb:vkb@localhost:5433/vkb",
+      "sensitive": true
+    },
+    "ollama_base_url": {
+      "type": "string",
+      "title": "Ollama Base URL",
+      "description": "Base URL of your local Ollama instance.",
+      "required": true,
+      "default": "http://localhost:11434"
+    },
+    "embed_model": {
+      "type": "string",
+      "title": "Embedding Model",
+      "description": "Ollama model used to generate embeddings (e.g. nomic-embed-text, mxbai-embed-large).",
+      "required": true,
+      "default": "nomic-embed-text"
+    },
+    "llm_model": {
+      "type": "string",
+      "title": "LLM Model",
+      "description": "Ollama model used for chunk/section summarisation and relation extraction (e.g. llama3.2, mistral).",
+      "required": true,
+      "default": "llama3.2"
+    },
+    "rawstore_path": {
+      "type": "directory",
+      "title": "Rawstore Path",
+      "description": "Local directory where raw ingested documents are persisted.",
+      "required": false,
+      "default": "./rawstore"
+    },
+    "log_level": {
+      "type": "string",
+      "title": "Log Level",
+      "description": "Minimum log level written to stderr and forwarded to the MCP client (debug, info, warn, error).",
+      "required": false,
+      "default": "info"
+    }
+  }
+}
+

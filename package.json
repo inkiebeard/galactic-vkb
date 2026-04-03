@@ -1,0 +1,40 @@
+{
+  "name": "vkb",
+  "version": "0.1.0",
+  "description": "Vector Knowledge Base — self-contained, local-first semantic memory system",
+  "type": "module",
+  "main": "dist/index.js",
+  "engines": { "node": ">=22.0.0" },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "pack:mcpb": "npm run build && mcpb pack . vkb.mcpb",
+    "start": "node dist/index.js",
+    "migrate": "tsx src/db/migrate.ts",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "db:reset": "docker compose down -v && docker compose up -d postgres"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "@mozilla/readability": "^0.6.0",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "js-yaml": "^4.1.1",
+    "jsdom": "^29.0.1",
+    "pg": "^8.20.0",
+    "uuid": "^13.0.0",
+    "ws": "^8.20.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/js-yaml": "^4.0.9",
+    "@types/jsdom": "^28.0.1",
+    "@types/node": "^25.5.0",
+    "@types/pg": "^8.20.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
+  }
+}
