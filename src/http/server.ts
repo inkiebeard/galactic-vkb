@@ -5,6 +5,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { IncomingMessage } from 'http';
+import { UMAP } from 'umap-js';
 import { config } from '../config.js';
 import { getPool, isDbConnectionError } from '../db/client.js';
 import type { Adapters } from '../adapters/registry.js';
@@ -13,6 +14,17 @@ import { createLogger } from '../logger.js';
 import { loadTls } from '../tls.js';
 
 const log = createLogger('obs');
+
+// Mulberry32 — fast seeded PRNG so UMAP projections are deterministic.
+function seededRandom(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s += 0x6d2b79f5;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) >>> 0;
+    return ((t ^ (t >>> 14)) >>> 0) / 0x100000000;
+  };
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -213,6 +225,88 @@ export function startObsServer(adapters: Adapters): void {
     } catch (e) { sendErr(res, e); }
   });
 
+  // ── Entities: UMAP projection ──────────────────────────────────────────────
+  // Mean-pools each entity's chunk embeddings into a single vector, then
+  // projects entity centroid vectors from N-dim → 3-dim via UMAP.
+  app.get('/entities/projection', auth, async (req, res) => {
+    try {
+      // Fetch all chunk embeddings grouped by entity, plus entity metadata
+      const { rows } = await db.query<{
+        entity_id: string; type: string; status: string; ref: string | null;
+        meta: Record<string, unknown>; summary: string | null;
+        embedding: string;
+      }>(
+        `SELECT c.entity_id, e.type, e.status, e.ref, e.meta, e.summary,
+                c.embedding::text AS embedding
+         FROM chunk c
+         JOIN entity e ON e.id = c.entity_id
+         WHERE c.embedding IS NOT NULL
+         ORDER BY c.entity_id`,
+      );
+
+      if (!rows.length) {
+        res.json({ ok: true, data: { points: [] } });
+        return;
+      }
+
+      // Group embeddings by entity and compute centroid (mean pool)
+      const entityMap = new Map<string, {
+        type: string; status: string; ref: string | null;
+        meta: Record<string, unknown>; summary: string | null;
+        sum: number[]; count: number;
+      }>();
+
+      for (const r of rows) {
+        const vec = JSON.parse(r.embedding as unknown as string) as number[];
+        const entry = entityMap.get(r.entity_id);
+        if (entry) {
+          for (let i = 0; i < vec.length; i++) entry.sum[i] += vec[i];
+          entry.count++;
+        } else {
+          entityMap.set(r.entity_id, {
+            type: r.type, status: r.status, ref: r.ref,
+            meta: r.meta, summary: r.summary,
+            sum: vec.slice(), count: 1,
+          });
+        }
+      }
+
+      const entityIds = [...entityMap.keys()];
+      const vectors   = entityIds.map(id => {
+        const e = entityMap.get(id)!;
+        return e.sum.map(v => v / e.count);
+      });
+
+      const nNeighbors = Math.min(15, vectors.length - 1);
+      const umap = new UMAP({ nComponents: 3, nNeighbors, minDist: 0.1, nEpochs: 200, random: seededRandom(0x564b4221) });
+      const embedding3d = await umap.fitAsync(vectors);
+
+      // Normalise to ±300 units
+      const coords = embedding3d as number[][];
+      let minV = Infinity, maxV = -Infinity;
+      for (const pt of coords) for (const v of pt) { if (v < minV) minV = v; if (v > maxV) maxV = v; }
+      const range = maxV - minV || 1;
+      const scale = 600 / range;
+
+      const points = entityIds.map((id, i) => {
+        const e = entityMap.get(id)!;
+        return {
+          id,
+          type:    e.type,
+          status:  e.status,
+          ref:     e.ref,
+          meta:    e.meta,
+          summary: e.summary,
+          x: (coords[i][0] - minV - range / 2) * scale,
+          y: (coords[i][1] - minV - range / 2) * scale,
+          z: (coords[i][2] - minV - range / 2) * scale,
+        };
+      });
+
+      res.json({ ok: true, data: { points } });
+    } catch (e) { sendErr(res, e); }
+  });
+
   // ── Entity detail ─────────────────────────────────────────────────────────
   app.get('/entities/:id', auth, async (req, res) => {
     try {
@@ -245,6 +339,66 @@ export function startObsServer(adapters: Adapters): void {
     try {
       const data = await handleDelete(param(req.params.id), adapters);
       res.json({ ok: true, data });
+    } catch (e) { sendErr(res, e); }
+  });
+
+  // ── Chunks: UMAP projection ──────────────────────────────────────────────
+  // Returns { id, entity_id, seq, summary, x, y, z } for all embedded chunks.
+  // Embeddings are projected from N-dim → 3-dim via UMAP so spatial proximity
+  // reflects semantic similarity.
+  app.get('/chunks/projection', auth, async (req, res) => {
+    try {
+      const { rows } = await db.query<{
+        id: string; entity_id: string; seq: number; summary: string | null;
+        entity_type: string; entity_ref: string | null; entity_meta: Record<string, unknown>;
+        embedding: string;
+      }>(
+        `SELECT c.id, c.entity_id, c.seq, c.summary,
+                e.type AS entity_type, e.ref AS entity_ref, e.meta AS entity_meta,
+                c.embedding::text AS embedding
+         FROM chunk c
+         JOIN entity e ON e.id = c.entity_id
+         WHERE c.embedding IS NOT NULL
+         ORDER BY c.entity_id, c.seq
+         LIMIT 5000`,
+      );
+
+      if (!rows.length) {
+        res.json({ ok: true, data: { points: [] } });
+        return;
+      }
+
+      // Parse pgvector text representation "[0.1,0.2,...]" → number[]
+      const vectors = rows.map(r => {
+        const s = r.embedding as unknown as string;
+        return JSON.parse(s.replace(/^\[/, '[').replace(/\]$/, ']')) as number[];
+      });
+
+      const nNeighbors = Math.min(15, vectors.length - 1);
+      const umap = new UMAP({ nComponents: 3, nNeighbors, minDist: 0.1, nEpochs: 200, random: seededRandom(0x564b4221) });
+      const embedding3d = await umap.fitAsync(vectors);
+
+      // Normalise to roughly ±300 units (same scale as entity view)
+      const coords = embedding3d as number[][];
+      let minV = Infinity, maxV = -Infinity;
+      for (const pt of coords) for (const v of pt) { if (v < minV) minV = v; if (v > maxV) maxV = v; }
+      const range = maxV - minV || 1;
+      const scale = 600 / range;
+
+      const points = rows.map((r, i) => ({
+        id:          r.id,
+        entity_id:   r.entity_id,
+        seq:         r.seq,
+        summary:     r.summary,
+        entity_type: r.entity_type,
+        entity_ref:  r.entity_ref,
+        entity_meta: r.entity_meta,
+        x: (coords[i][0] - minV - range / 2) * scale,
+        y: (coords[i][1] - minV - range / 2) * scale,
+        z: (coords[i][2] - minV - range / 2) * scale,
+      }));
+
+      res.json({ ok: true, data: { points } });
     } catch (e) { sendErr(res, e); }
   });
 

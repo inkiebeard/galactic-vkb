@@ -4,7 +4,9 @@
   "description": "Vector Knowledge Base — self-contained, local-first semantic memory system",
   "type": "module",
   "main": "dist/index.js",
-  "engines": { "node": ">=22.0.0" },
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
@@ -23,6 +25,7 @@
     "js-yaml": "^4.1.1",
     "jsdom": "^29.0.1",
     "pg": "^8.20.0",
+    "umap-js": "^1.4.0",
     "uuid": "^13.0.0",
     "ws": "^8.20.0",
     "zod": "^4.3.6"
