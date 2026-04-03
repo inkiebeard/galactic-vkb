@@ -1,0 +1,1314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>vkb · Ingest</title>
+<style>
+  :root {
+    --bg: #0f0e0c;
+    --surf: #1a1917;
+    --card: #242321;
+    --card2: #2c2b28;
+    --line: rgba(255,255,255,0.08);
+    --line2: rgba(255,255,255,0.14);
+    --ink: #e8e6df;
+    --muted: #9c9a92;
+    --hint: #6b6a65;
+    --teal: #5dcaa5;
+    --teal-dim: #2e6a55;
+    --purple: #afa9ec;
+    --amber: #fac775;
+    --coral: #f5c4b3;
+    --red: #e87272;
+    --mono: 'IBM Plex Mono', monospace;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 13px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Header ──────────────────────────────────────────────────── */
+  header {
+    height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 24px;
+    background: rgba(26,25,23,0.92);
+    border-bottom: 0.5px solid var(--line);
+    flex-shrink: 0;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  .brand { font-size: 14px; font-weight: 500; color: var(--teal); letter-spacing: 0.04em; }
+  .brand span { color: var(--muted); font-weight: 400; }
+  .header-link {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--muted);
+    text-decoration: none;
+    border: 0.5px solid var(--line2);
+    padding: 4px 10px;
+    border-radius: 4px;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .header-link:hover { color: var(--teal); border-color: var(--teal-dim); }
+
+  /* ── Layout ──────────────────────────────────────────────────── */
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    max-width: 1200px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 32px 24px;
+    gap: 24px;
+    align-items: start;
+  }
+  @media (max-width: 800px) {
+    main { grid-template-columns: 1fr; }
+  }
+
+  /* ── Card ────────────────────────────────────────────────────── */
+  .card {
+    background: var(--card);
+    border: 0.5px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .card-header {
+    padding: 14px 16px;
+    border-bottom: 0.5px solid var(--line);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--hint);
+  }
+  .card-body { padding: 16px; }
+
+  /* ── Tabs ────────────────────────────────────────────────────── */
+  .tabs {
+    display: flex;
+    gap: 2px;
+    background: var(--bg);
+    border: 0.5px solid var(--line);
+    border-radius: 6px;
+    padding: 3px;
+    margin-bottom: 16px;
+  }
+  .tab-btn {
+    flex: 1;
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 6px 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .tab-btn.active {
+    background: var(--card2);
+    color: var(--ink);
+  }
+  .tab-btn:hover:not(.active) { color: var(--ink); }
+
+  .tab-pane { display: none; }
+  .tab-pane.active { display: block; }
+
+  /* ── Form elements ───────────────────────────────────────────── */
+  label {
+    display: block;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--hint);
+    margin-bottom: 6px;
+    margin-top: 12px;
+  }
+  label:first-child { margin-top: 0; }
+
+  input[type="text"],
+  input[type="url"],
+  textarea {
+    width: 100%;
+    background: var(--bg);
+    border: 0.5px solid var(--line2);
+    border-radius: 5px;
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 8px 10px;
+    outline: none;
+    transition: border-color 0.15s;
+    resize: vertical;
+  }
+  input[type="text"]:focus,
+  input[type="url"]:focus,
+  textarea:focus { border-color: var(--teal-dim); }
+
+  .drop-zone {
+    border: 1.5px dashed var(--line2);
+    border-radius: 6px;
+    padding: 28px 16px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 11px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    position: relative;
+    line-height: 1.8;
+  }
+  .drop-zone:hover, .drop-zone.drag-over {
+    border-color: var(--teal-dim);
+    background: rgba(93,202,165,0.04);
+  }
+  .drop-zone input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+  }
+  .drop-zone .dz-icon {
+    font-size: 24px;
+    line-height: 1;
+    margin-bottom: 8px;
+    display: block;
+  }
+  .drop-zone .dz-hint { color: var(--hint); font-size: 10px; margin-top: 4px; }
+
+  .file-list {
+    margin-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 140px;
+    overflow-y: auto;
+  }
+  .file-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg);
+    border: 0.5px solid var(--line);
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-size: 10px;
+    color: var(--muted);
+  }
+  .file-item .fi-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-item .fi-size { color: var(--hint); flex-shrink: 0; }
+  .file-item .fi-remove {
+    background: none;
+    border: none;
+    color: var(--hint);
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1;
+    padding: 0 2px;
+    flex-shrink: 0;
+  }
+  .file-item .fi-remove:hover { color: var(--coral); }
+
+  .meta-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 12px;
+  }
+
+  .submit-btn {
+    width: 100%;
+    margin-top: 16px;
+    padding: 10px;
+    background: var(--teal-dim);
+    color: var(--teal);
+    border: 0.5px solid var(--teal-dim);
+    border-radius: 5px;
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+    letter-spacing: 0.04em;
+  }
+  .submit-btn:hover:not(:disabled) {
+    background: rgba(93,202,165,0.2);
+    color: #7ddcb8;
+  }
+  .submit-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .helper-text {
+    margin-top: 6px;
+    font-size: 10px;
+    color: var(--hint);
+    line-height: 1.5;
+  }
+
+  /* ── Pipeline panel ──────────────────────────────────────────── */
+  #pipeline-panel .card-body { padding: 0; }
+
+  .pipeline-empty {
+    padding: 40px 16px;
+    text-align: center;
+    font-size: 11px;
+    color: var(--hint);
+    line-height: 2;
+  }
+
+  .job-card {
+    padding: 14px 16px;
+    border-bottom: 0.5px solid var(--line);
+  }
+  .job-card:last-child { border-bottom: none; }
+
+  .job-meta {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+  }
+  .job-label {
+    font-size: 11px;
+    color: var(--ink);
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .job-status {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-weight: 500;
+    flex-shrink: 0;
+  }
+  .status-pending   { background: #2a2820; color: var(--hint); }
+  .status-active    { background: #332b10; color: var(--amber); }
+  .status-done      { background: #0e2d20; color: var(--teal); }
+  .status-error     { background: #2d1414; color: var(--coral); }
+
+  /* Stage rail */
+  .stage-rail {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    overflow: hidden;
+  }
+  .stage-node {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    flex: 1;
+    position: relative;
+  }
+  .stage-node::before {
+    content: '';
+    position: absolute;
+    top: 8px;
+    left: calc(-50% + 8px);
+    right: calc(50% + 8px);
+    height: 1px;
+    background: var(--line);
+  }
+  .stage-node:first-child::before { display: none; }
+  .stage-node.sn-done::before { background: var(--teal-dim); }
+  .stage-node.sn-active::before { background: var(--teal-dim); }
+
+  .stage-dot {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 1.5px solid var(--line2);
+    background: var(--bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 8px;
+    position: relative;
+    z-index: 1;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .sn-done .stage-dot { border-color: var(--teal); background: var(--teal-dim); }
+  .sn-active .stage-dot { border-color: var(--amber); background: #332b10; animation: pulse 1.2s ease-in-out infinite; }
+  .sn-error .stage-dot { border-color: var(--coral); background: #2d1414; }
+
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(250,199,117,0.3); }
+    50%       { box-shadow: 0 0 0 4px rgba(250,199,117,0); }
+  }
+
+  .stage-label {
+    font-size: 8px;
+    color: var(--hint);
+    text-align: center;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+  }
+  .sn-done   .stage-label { color: var(--teal); }
+  .sn-active .stage-label { color: var(--amber); }
+  .sn-error  .stage-label { color: var(--coral); }
+
+  .job-progress-bar-wrap {
+    margin-top: 8px;
+    height: 3px;
+    background: var(--line);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .job-progress-bar {
+    height: 100%;
+    border-radius: 2px;
+    background: var(--teal-dim);
+    transition: width 0.4s ease;
+  }
+  .job-progress-bar.pb-active { background: var(--amber); }
+  .job-progress-bar.pb-error  { background: var(--coral); }
+
+  .job-error-msg {
+    margin-top: 7px;
+    font-size: 10px;
+    color: var(--coral);
+    line-height: 1.5;
+    background: #2d1414;
+    border-radius: 4px;
+    padding: 6px 8px;
+  }
+
+  /* ── Result / completed section ──────────────────────────────── */
+  .result-section {
+    display: none;
+    padding: 20px 16px;
+    text-align: center;
+    border-top: 0.5px solid var(--line);
+  }
+  .result-section.visible { display: block; }
+  .result-icon { font-size: 28px; margin-bottom: 10px; }
+  .result-title { font-size: 13px; color: var(--ink); margin-bottom: 4px; }
+  .result-sub   { font-size: 11px; color: var(--muted); margin-bottom: 16px; line-height: 1.6; }
+  .result-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+
+  .btn-primary {
+    padding: 8px 18px;
+    background: var(--teal-dim);
+    color: var(--teal);
+    border: 0.5px solid var(--teal-dim);
+    border-radius: 5px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 0.15s;
+  }
+  .btn-primary:hover { background: rgba(93,202,165,0.2); color: #7ddcb8; }
+
+  .btn-secondary {
+    padding: 8px 18px;
+    background: none;
+    color: var(--muted);
+    border: 0.5px solid var(--line2);
+    border-radius: 5px;
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .btn-secondary:hover { color: var(--ink); border-color: var(--muted); }
+
+  /* ── WS indicator ────────────────────────────────────────────── */
+  .ws-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--hint);
+    flex-shrink: 0;
+  }
+  .ws-dot.connected { background: var(--teal); }
+
+  /* ── Scrollbar ───────────────────────────────────────────────── */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="nav-anchor" id="nav-anchor" role="button" aria-expanded="false" aria-haspopup="true">
+    <div class="brand">vkb <span>· ingest</span></div>
+    <span class="nav-caret">&#9660;</span>
+    <div class="nav-popout" id="nav-popout">
+      <div class="nav-section">
+        <div class="nav-section-label">Navigate</div>
+        <a class="nav-item active" href="/ingest/">
+          <i class="nav-item-icon">&#8659;</i> Ingest
+          <span class="nav-item-sub">current</span>
+        </a>
+        <a class="nav-item" href="/viz/">
+          <i class="nav-item-icon">&#10040;</i> Graph Visualiser
+        </a>
+      </div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+    <div class="ws-dot" id="ws-dot"></div>
+    <span id="ws-label" style="font-size:10px;color:var(--hint)">connecting…</span>
+  </div>
+</header>
+
+<main>
+  <!-- Left: Ingest form -->
+  <div>
+    <div class="card">
+      <div class="card-header">New ingest</div>
+      <div class="card-body">
+        <div class="tabs" role="tablist">
+          <button class="tab-btn active" data-tab="url"    role="tab">URL</button>
+          <button class="tab-btn"        data-tab="text"   role="tab">Text</button>
+          <button class="tab-btn"        data-tab="files"  role="tab">Files</button>
+          <button class="tab-btn"        data-tab="folder" role="tab">Folder</button>
+        </div>
+
+        <!-- URL tab -->
+        <div class="tab-pane active" id="tab-url">
+          <label for="url-input">URL</label>
+          <input type="url" id="url-input" placeholder="https://example.com/page" autocomplete="off" spellcheck="false">
+          <p class="helper-text">Fetches remote content, strips markup, and indexes the text.</p>
+          <div class="meta-row">
+            <div>
+              <label for="url-tag">Tag (optional)</label>
+              <input type="text" id="url-tag" placeholder="research, notes…" autocomplete="off">
+            </div>
+            <div>
+              <label for="url-title">Title (optional)</label>
+              <input type="text" id="url-title" placeholder="override page title" autocomplete="off">
+            </div>
+          </div>
+        </div>
+
+        <!-- Text tab -->
+        <div class="tab-pane" id="tab-text">
+          <label for="text-content">Content</label>
+          <textarea id="text-content" rows="7" placeholder="Paste or type text here…" spellcheck="false"></textarea>
+          <div class="meta-row">
+            <div>
+              <label for="text-title">Title</label>
+              <input type="text" id="text-title" placeholder="Give it a name…" autocomplete="off">
+            </div>
+            <div>
+              <label for="text-tag">Tag (optional)</label>
+              <input type="text" id="text-tag" placeholder="research, notes…" autocomplete="off">
+            </div>
+          </div>
+        </div>
+
+        <!-- Files tab -->
+        <div class="tab-pane" id="tab-files">
+          <div class="drop-zone" id="files-drop">
+            <input type="file" id="files-input" multiple accept=".txt,.md,.markdown,.html,.htm,.csv,.json,.xml,.rst,.org,.tex">
+            <span class="dz-icon">📄</span>
+            Click to select or drop files here
+            <div class="dz-hint">.txt · .md · .html · .csv · .json · .xml and more</div>
+          </div>
+          <div class="file-list" id="files-list"></div>
+          <div class="meta-row">
+            <div>
+              <label for="files-tag">Tag (optional)</label>
+              <input type="text" id="files-tag" placeholder="docs, export…" autocomplete="off">
+            </div>
+          </div>
+        </div>
+
+        <!-- Folder tab -->
+        <div class="tab-pane" id="tab-folder">
+          <div class="drop-zone" id="folder-drop">
+            <input type="file" id="folder-input" webkitdirectory multiple>
+            <span class="dz-icon">📁</span>
+            Click to select a folder
+            <div class="dz-hint">All readable text files inside will be ingested</div>
+          </div>
+          <div class="file-list" id="folder-list"></div>
+          <div class="meta-row">
+            <div>
+              <label for="folder-tag">Tag (optional)</label>
+              <input type="text" id="folder-tag" placeholder="project, archive…" autocomplete="off">
+            </div>
+          </div>
+        </div>
+
+        <button class="submit-btn" id="submit-btn" disabled>Ingest</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right: Pipeline feedback -->
+  <div>
+    <div class="card" id="pipeline-panel">
+      <div class="card-header" style="display:flex;align-items:center;justify-content:space-between">
+        <span>Pipeline</span>
+        <span id="job-count-label" style="font-size:10px;color:var(--hint)"></span>
+      </div>
+      <div class="card-body" id="pipeline-body">
+        <div class="pipeline-empty" id="pipeline-empty">
+          Submit content on the left to start ingestion.<br>
+          Progress will appear here in real time.
+        </div>
+      </div>
+      <div class="result-section" id="result-section">
+        <div class="result-icon" id="result-icon">✓</div>
+        <div class="result-title" id="result-title">Ingestion complete</div>
+        <div class="result-sub" id="result-sub">All items processed successfully.</div>
+        <div class="result-actions">
+          <a href="/viz/" class="btn-primary" id="viz-link">View in graph →</a>
+          <button class="btn-secondary" id="start-again-btn">Ingest more</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- Remediation panel -->
+<section id="remediation">
+  <div class="rem-header" id="rem-header" role="button" aria-expanded="false">
+    <span class="rem-title">Remediation — partial &amp; failed ingestions</span>
+    <span class="rem-badge b-none" id="rem-badge">not scanned</span>
+    <span class="rem-chevron" id="rem-chevron">▼</span>
+  </div>
+  <div class="rem-body" id="rem-body">
+    <div class="rem-toolbar">
+      <span class="rem-toolbar-label" id="rem-toolbar-label">Scan to find entities that failed or stalled during ingestion.</span>
+      <button class="rem-scan-btn" id="rem-scan-btn">Scan now</button>
+      <button class="rem-repair-all-btn" id="rem-repair-all-btn" disabled>Repair all repairable</button>
+      <button class="rem-delete-all-btn" id="rem-delete-all-btn" disabled>Delete all</button>
+    </div>
+    <div id="rem-content">
+      <div class="rem-empty" id="rem-empty">Press "Scan now" to check for broken ingestions.</div>
+    </div>
+  </div>
+</section>
+
+<script>
+/* ── State ──────────────────────────────────────────────────────────────────── */
+const STAGES = ['queued','fetching','chunking','embedding','sectioning','summarising','extracting','done'];
+const STAGE_IDX = Object.fromEntries(STAGES.map((s,i) => [s,i]));
+const ACTIVE_STAGES = new Set(['queued','fetching','chunking','embedding','sectioning','summarising','extracting']);
+
+// jobs: Map<jobId, { label, stage, error, entityId, element }>
+const jobs = new Map();
+let ws = null;
+let wsConnected = false;
+let activeTab = 'url';
+let pendingFiles = []; // {name, size, text, tag}
+let pendingFolderFiles = [];
+
+/* ── Utilities ──────────────────────────────────────────────────────────────── */
+function fmtSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function isTextFile(name) {
+  return /\.(txt|md|markdown|html?|csv|json|xml|rst|org|tex|js|ts|py|rb|go|rs|c|cpp|h|java|kt|swift|sql|yaml|yml|toml|sh|bash|zsh|ps1|r|jl|lua|pl|php)$/i.test(name);
+}
+
+/* ── WebSocket ──────────────────────────────────────────────────────────────── */
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/stream`);
+
+  ws.addEventListener('open', () => {
+    wsConnected = true;
+    document.getElementById('ws-dot').classList.add('connected');
+    document.getElementById('ws-label').textContent = 'live';
+    document.getElementById('ws-label').style.color = 'var(--teal)';
+  });
+
+  ws.addEventListener('close', () => {
+    wsConnected = false;
+    document.getElementById('ws-dot').classList.remove('connected');
+    document.getElementById('ws-label').textContent = 'reconnecting…';
+    document.getElementById('ws-label').style.color = 'var(--hint)';
+    setTimeout(connectWS, 3000);
+  });
+
+  ws.addEventListener('error', () => ws.close());
+
+  ws.addEventListener('message', e => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    if (!msg || !msg.job_id) return;
+    const job = jobs.get(msg.job_id);
+    if (!job) return;
+
+    if (msg.type === 'stage_change' && msg.stage) {
+      updateJobStage(msg.job_id, msg.stage, null);
+    } else if (msg.type === 'error') {
+      const errMsg = typeof msg.payload === 'string' ? msg.payload : (msg.payload?.detail ?? msg.payload?.error ?? 'Pipeline error');
+      updateJobStage(msg.job_id, 'error', errMsg);
+    } else if (msg.type === 'complete') {
+      updateJobStage(msg.job_id, 'done', null);
+    }
+  });
+}
+
+/* ── Tabs ───────────────────────────────────────────────────────────────────── */
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    activeTab = btn.dataset.tab;
+    document.getElementById(`tab-${activeTab}`).classList.add('active');
+    updateSubmitState();
+  });
+});
+
+/* ── URL input ──────────────────────────────────────────────────────────────── */
+document.getElementById('url-input').addEventListener('input', updateSubmitState);
+
+/* ── Text input ─────────────────────────────────────────────────────────────── */
+document.getElementById('text-content').addEventListener('input', updateSubmitState);
+
+/* ── File helpers ───────────────────────────────────────────────────────────── */
+async function readFileText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => resolve(e.target.result);
+    reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+    reader.readAsText(file, 'utf-8');
+  });
+}
+
+function renderFileList(listEl, files) {
+  listEl.innerHTML = '';
+  files.forEach((f, i) => {
+    const item = document.createElement('div');
+    item.className = 'file-item';
+    item.innerHTML = `
+      <span class="fi-name" title="${f.name}">${f.name}</span>
+      <span class="fi-size">${fmtSize(f.size)}</span>
+      <button class="fi-remove" data-idx="${i}" title="Remove">✕</button>
+    `;
+    listEl.appendChild(item);
+  });
+  listEl.querySelectorAll('.fi-remove').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.dataset.idx);
+      if (listEl.id === 'files-list') {
+        pendingFiles.splice(idx, 1);
+        renderFileList(listEl, pendingFiles);
+      } else {
+        pendingFolderFiles.splice(idx, 1);
+        renderFileList(listEl, pendingFolderFiles);
+      }
+      updateSubmitState();
+    });
+  });
+}
+
+async function handleFileSelection(input, targetArr, listEl) {
+  const rawFiles = Array.from(input.files || []).filter(f => isTextFile(f.name));
+  for (const f of rawFiles) {
+    try {
+      const text = await readFileText(f);
+      targetArr.push({ name: f.name, size: f.size, text, path: f.webkitRelativePath || f.name });
+    } catch (err) {
+      console.warn('Skipped', f.name, err.message);
+    }
+  }
+  renderFileList(listEl, targetArr);
+  updateSubmitState();
+}
+
+/* Files */
+const filesInput = document.getElementById('files-input');
+const filesList  = document.getElementById('files-list');
+filesInput.addEventListener('change', () => handleFileSelection(filesInput, pendingFiles, filesList));
+
+/* Folder */
+const folderInput = document.getElementById('folder-input');
+const folderList  = document.getElementById('folder-list');
+folderInput.addEventListener('change', () => handleFileSelection(folderInput, pendingFolderFiles, folderList));
+
+/* Drag & drop */
+['files-drop', 'folder-drop'].forEach(id => {
+  const zone = document.getElementById(id);
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault();
+    zone.classList.remove('drag-over');
+    // Let the file input handle it via the same handler
+    const inp = zone.querySelector('input[type="file"]');
+    // DataTransfer.files cannot be assigned; trigger via synthetic File constructor then array
+    const dt = e.dataTransfer;
+    if (dt && dt.files.length) {
+      const arr = id === 'files-drop' ? pendingFiles : pendingFolderFiles;
+      const lst = id === 'files-drop' ? filesList : folderList;
+      const rawFiles = Array.from(dt.files).filter(f => isTextFile(f.name));
+      Promise.all(rawFiles.map(f => readFileText(f).then(text => arr.push({ name: f.name, size: f.size, text, path: f.name }))))
+        .then(() => { renderFileList(lst, arr); updateSubmitState(); });
+    }
+  });
+});
+
+/* ── Submit state ───────────────────────────────────────────────────────────── */
+function updateSubmitState() {
+  const btn = document.getElementById('submit-btn');
+  let ready = false;
+  if (activeTab === 'url')    ready = !!document.getElementById('url-input').value.trim();
+  if (activeTab === 'text')   ready = !!document.getElementById('text-content').value.trim();
+  if (activeTab === 'files')  ready = pendingFiles.length > 0;
+  if (activeTab === 'folder') ready = pendingFolderFiles.length > 0;
+  btn.disabled = !ready;
+}
+
+/* ── Pipeline UI ────────────────────────────────────────────────────────────── */
+function createJobCard(jobId, label) {
+  const el = document.createElement('div');
+  el.className = 'job-card';
+  el.id = `job-${jobId}`;
+  el.innerHTML = `
+    <div class="job-meta">
+      <div class="job-label" title="${label}">${label}</div>
+      <div class="job-status status-pending" id="jstatus-${jobId}">queued</div>
+    </div>
+    <div class="stage-rail" id="srail-${jobId}">
+      ${STAGES.filter(s=>s!=='queued').map(s => `
+        <div class="stage-node sn-pending" id="sn-${jobId}-${s}">
+          <div class="stage-dot"></div>
+          <div class="stage-label">${s}</div>
+        </div>
+      `).join('')}
+    </div>
+    <div class="job-progress-bar-wrap">
+      <div class="job-progress-bar" id="jpbar-${jobId}" style="width:0%"></div>
+    </div>
+  `;
+  return el;
+}
+
+function updateJobStage(jobId, stage, errorMsg) {
+  const job = jobs.get(jobId);
+  if (!job) return;
+
+  job.stage = stage;
+  if (errorMsg) job.error = errorMsg;
+
+  const statusEl = document.getElementById(`jstatus-${jobId}`);
+  const pbarEl   = document.getElementById(`jpbar-${jobId}`);
+  const railEl   = document.getElementById(`srail-${jobId}`);
+
+  if (!statusEl) return;
+
+  // Status badge
+  const isDone  = stage === 'done';
+  const isError = stage === 'error';
+  const isActive = ACTIVE_STAGES.has(stage);
+
+  statusEl.className = `job-status ${isDone ? 'status-done' : isError ? 'status-error' : isActive ? 'status-active' : 'status-pending'}`;
+  statusEl.textContent = stage;
+
+  // Progress bar
+  const stagesForBar = STAGES.filter(s => s !== 'queued');
+  const curIdx = stagesForBar.indexOf(stage);
+  const pct = isDone ? 100 : isError ? (curIdx >= 0 ? Math.round((curIdx / stagesForBar.length) * 100) : 0) : (curIdx >= 0 ? Math.round(((curIdx + 0.5) / stagesForBar.length) * 100) : 0);
+  pbarEl.style.width = pct + '%';
+  pbarEl.className = `job-progress-bar ${isDone ? '' : isError ? 'pb-error' : 'pb-active'}`;
+
+  // Stage rail nodes
+  const rails = STAGES.filter(s => s !== 'queued');
+  rails.forEach(s => {
+    const node = document.getElementById(`sn-${jobId}-${s}`);
+    if (!node) return;
+    const sIdx = STAGE_IDX[s];
+    const cur  = isError ? STAGE_IDX[stage] ?? STAGE_IDX[job.priorStage ?? 'queued'] : STAGE_IDX[stage];
+    node.className = 'stage-node ' + (
+      isDone                        ? 'sn-done'   :
+      isError && s === 'error'      ? 'sn-error'  :
+      isError && sIdx < cur         ? 'sn-done'   :
+      !isError && sIdx < STAGE_IDX[stage] ? 'sn-done' :
+      !isError && s === stage       ? 'sn-active' :
+      'sn-pending'
+    );
+  });
+
+  // Error message
+  const existingErr = document.getElementById(`jerr-${jobId}`);
+  if (isError && errorMsg) {
+    if (!existingErr) {
+      const errEl = document.createElement('div');
+      errEl.className = 'job-error-msg';
+      errEl.id = `jerr-${jobId}`;
+      errEl.textContent = errorMsg;
+      document.getElementById(`job-${jobId}`).appendChild(errEl);
+    }
+  } else if (existingErr) {
+    existingErr.remove();
+  }
+
+  if (!isError) job.priorStage = stage;
+
+  // Check overall completion
+  checkCompletion();
+}
+
+function checkCompletion() {
+  if (jobs.size === 0) return;
+
+  const all     = [...jobs.values()];
+  const settled = all.filter(j => j.stage === 'done' || j.stage === 'error');
+  const errors  = all.filter(j => j.stage === 'error');
+
+  updateJobCountLabel();
+
+  if (settled.length < all.length) return; // still running
+
+  const resultSection = document.getElementById('result-section');
+  const resultIcon    = document.getElementById('result-icon');
+  const resultTitle   = document.getElementById('result-title');
+  const resultSub     = document.getElementById('result-sub');
+  resultSection.classList.add('visible');
+  document.getElementById('pipeline-empty').style.display = 'none';
+
+  if (errors.length === 0) {
+    resultIcon.textContent = '✓';
+    resultIcon.style.color = 'var(--teal)';
+    resultTitle.textContent = all.length === 1 ? 'Ingestion complete' : `${all.length} items ingested`;
+    resultSub.textContent = 'All items processed and indexed. Explore the knowledge graph.';
+  } else if (errors.length === all.length) {
+    resultIcon.textContent = '✕';
+    resultIcon.style.color = 'var(--coral)';
+    resultTitle.textContent = 'Ingestion failed';
+    resultSub.textContent = `${errors.length} item${errors.length > 1 ? 's' : ''} encountered errors. Check labels above for details.`;
+  } else {
+    resultIcon.textContent = '⚠';
+    resultIcon.style.color = 'var(--amber)';
+    resultTitle.textContent = `${all.length - errors.length} of ${all.length} items ingested`;
+    resultSub.textContent = `${errors.length} item${errors.length > 1 ? 's' : ''} failed. Successful items are available in the graph.`;
+  }
+}
+
+function updateJobCountLabel() {
+  const all      = [...jobs.values()];
+  const done     = all.filter(j => j.stage === 'done').length;
+  const errored  = all.filter(j => j.stage === 'error').length;
+  const running  = all.filter(j => j.stage !== 'done' && j.stage !== 'error').length;
+  const lbl      = document.getElementById('job-count-label');
+  if (all.length === 0) { lbl.textContent = ''; return; }
+  const parts = [];
+  if (running) parts.push(`${running} running`);
+  if (done)    parts.push(`${done} done`);
+  if (errored) parts.push(`${errored} error`);
+  lbl.textContent = parts.join(' · ');
+}
+
+/* ── Submit ─────────────────────────────────────────────────────────────────── */
+document.getElementById('submit-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('submit-btn');
+  btn.disabled = true;
+  btn.textContent = 'Submitting…';
+
+  // Hide result section for new batch
+  document.getElementById('result-section').classList.remove('visible');
+  document.getElementById('pipeline-empty').style.display = 'none';
+
+  try {
+    if (activeTab === 'url') {
+      await submitURL();
+    } else if (activeTab === 'text') {
+      await submitText();
+    } else if (activeTab === 'files') {
+      await submitFiles(pendingFiles, document.getElementById('files-tag').value.trim());
+    } else if (activeTab === 'folder') {
+      await submitFiles(pendingFolderFiles, document.getElementById('folder-tag').value.trim());
+    }
+  } catch (err) {
+    console.error(err);
+    alert('Submission error: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Ingest';
+    updateSubmitState();
+  }
+});
+
+async function postIngest(payload) {
+  const res = await fetch('/ingest', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const json = await res.json();
+  if (!json.ok) throw new Error(json.error || 'Unknown server error');
+  return json.data; // { job_id, entity_id }
+}
+
+function registerJob(jobId, entityId, label) {
+  const emptyEl = document.getElementById('pipeline-empty');
+  emptyEl.style.display = 'none';
+
+  const card = createJobCard(jobId, label);
+  document.getElementById('pipeline-body').insertBefore(card, emptyEl);
+
+  jobs.set(jobId, { stage: 'queued', label, entityId, error: null, priorStage: null });
+  updateJobCountLabel();
+  // Poll for job status in case WS misses events (e.g. if already processed before WS connects)
+  pollJob(jobId);
+}
+
+async function submitURL() {
+  const url   = document.getElementById('url-input').value.trim();
+  const tag   = document.getElementById('url-tag').value.trim();
+  const title = document.getElementById('url-title').value.trim();
+  const meta  = {};
+  if (tag)   meta.tag   = tag;
+  if (title) meta.title = title;
+  const d = await postIngest({ type: 'url', ref: url, meta });
+  registerJob(d.job_id, d.entity_id, url);
+  document.getElementById('url-input').value = '';
+  document.getElementById('url-tag').value   = '';
+  document.getElementById('url-title').value = '';
+}
+
+async function submitText() {
+  const text  = document.getElementById('text-content').value.trim();
+  const title = document.getElementById('text-title').value.trim() || 'Untitled note';
+  const tag   = document.getElementById('text-tag').value.trim();
+  const meta  = { title };
+  if (tag) meta.tag = tag;
+  const d = await postIngest({ type: 'note', text, meta });
+  registerJob(d.job_id, d.entity_id, title);
+  document.getElementById('text-content').value = '';
+  document.getElementById('text-title').value   = '';
+  document.getElementById('text-tag').value     = '';
+}
+
+async function submitFiles(fileArr, tag) {
+  for (const f of fileArr) {
+    const meta = { filename: f.name, path: f.path };
+    if (tag) meta.tag = tag;
+    // Send text only (no ref) — ref causes the pipeline to try fetching the local path as a URL
+    const d = await postIngest({ type: 'doc', text: f.text, meta });
+    registerJob(d.job_id, d.entity_id, f.name);
+  }
+  // Clear
+  if (activeTab === 'files') {
+    pendingFiles.length = 0;
+    renderFileList(filesList, pendingFiles);
+  } else {
+    pendingFolderFiles.length = 0;
+    renderFileList(folderList, pendingFolderFiles);
+  }
+}
+
+/* ── Job polling (fallback / catch-up) ──────────────────────────────────────── */
+async function pollJob(jobId) {
+  // Poll every 2 s until settled
+  const interval = setInterval(async () => {
+    const job = jobs.get(jobId);
+    if (!job) { clearInterval(interval); return; }
+    if (job.stage === 'done' || job.stage === 'error') { clearInterval(interval); return; }
+    try {
+      const res = await fetch(`/jobs?kind=ingest&limit=200`);
+      const data = await res.json();
+      if (!data.ok) return;
+      const found = data.data.jobs.find(j => j.id === jobId);
+      if (!found) return;
+      if (found.stage !== job.stage) {
+        const errMsg = found.stage === 'error' ? (found.progress?.error_detail ?? 'Pipeline error') : null;
+        updateJobStage(jobId, found.stage, errMsg);
+      }
+    } catch { /* ignore network errors */ }
+  }, 2000);
+}
+
+/* ── Start again ────────────────────────────────────────────────────────────── */
+document.getElementById('start-again-btn').addEventListener('click', () => {
+  jobs.clear();
+  const body = document.getElementById('pipeline-body');
+  // Remove all job cards
+  body.querySelectorAll('.job-card').forEach(el => el.remove());
+  document.getElementById('pipeline-empty').style.display = '';
+  document.getElementById('result-section').classList.remove('visible');
+  updateJobCountLabel();
+  updateSubmitState();
+});
+
+/* ── Nav menu ───────────────────────────────────────────────────────────────── */
+(function() {
+  const anchor  = document.getElementById('nav-anchor');
+  const popout  = document.getElementById('nav-popout');
+  anchor.addEventListener('click', e => {
+    e.stopPropagation();
+    const open = popout.classList.toggle('open');
+    anchor.setAttribute('aria-expanded', String(open));
+  });
+  document.addEventListener('click', () => {
+    popout.classList.remove('open');
+    anchor.setAttribute('aria-expanded', 'false');
+  });
+  popout.addEventListener('click', e => e.stopPropagation());
+})();
+
+/* ── Remediation panel ─────────────────────────────────────────────────────── */
+let remItems = []; // current scan results
+
+// Toggle open/close
+document.getElementById('rem-header').addEventListener('click', () => {
+  const body    = document.getElementById('rem-body');
+  const chevron = document.getElementById('rem-chevron');
+  const header  = document.getElementById('rem-header');
+  const open    = body.classList.toggle('open');
+  chevron.classList.toggle('open', open);
+  header.setAttribute('aria-expanded', String(open));
+});
+
+function fmtRemLabel(item) {
+  if (item.ref) return item.ref;
+  const filename = item.meta?.filename || item.meta?.title || null;
+  if (filename) return String(filename);
+  return item.id.slice(0, 8) + '…';
+}
+
+function remedyLabel(r) {
+  if (r === 'reingest') return 'needs repair';
+  if (r === 'stuck')    return 'stuck';
+  return 'no raw — delete only';
+}
+
+function renderRemTable(items) {
+  const content = document.getElementById('rem-content');
+  const lbl     = document.getElementById('rem-toolbar-label');
+  const repairAllBtn = document.getElementById('rem-repair-all-btn');
+  const deleteAllBtn = document.getElementById('rem-delete-all-btn');
+
+  if (items.length === 0) {
+    content.innerHTML = '<div class="rem-empty" style="color:var(--teal)">✓ No broken ingestions found.</div>';
+    lbl.textContent = 'All clear.';
+    repairAllBtn.disabled = true;
+    deleteAllBtn.disabled = true;
+    updateRemBadge(0, true);
+    return;
+  }
+
+  const repairable = items.filter(i => i.remedy !== 'no_raw');
+  lbl.textContent = `${items.length} issue${items.length !== 1 ? 's' : ''} found · ${repairable.length} repairable`;
+  repairAllBtn.disabled = repairable.length === 0;
+  deleteAllBtn.disabled = false;
+  updateRemBadge(items.length, false);
+
+  const tbl = document.createElement('table');
+  tbl.className = 'rem-table';
+  tbl.innerHTML = `
+    <thead>
+      <tr>
+        <th>Source</th>
+        <th>Type</th>
+        <th>Status</th>
+        <th>Chunks</th>
+        <th>Last stage</th>
+        <th>Diagnosis</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="rem-tbody"></tbody>
+  `;
+  content.innerHTML = '';
+  content.appendChild(tbl);
+
+  const tbody = document.getElementById('rem-tbody');
+  items.forEach(item => {
+    const tr = document.createElement('tr');
+    tr.id = `rem-row-${item.id}`;
+    const lastStage = item.latest_job?.stage ?? '—';
+    const errTip    = item.latest_job?.error ? ` title="${item.latest_job.error.replace(/"/g, '&quot;')}"` : '';
+    tr.innerHTML = `
+      <td><div class="rem-ref"${errTip}>${fmtRemLabel(item)}</div></td>
+      <td>${item.type}</td>
+      <td>${item.status}</td>
+      <td>${item.chunk_count}</td>
+      <td>${lastStage}</td>
+      <td><span class="rem-remedy r-${item.remedy}">${remedyLabel(item.remedy)}</span></td>
+      <td>
+        <div class="rem-action-cell">
+          <button class="ra-repair" data-id="${item.id}" ${item.remedy === 'no_raw' ? 'disabled title="No raw content — cannot repair"' : ''}>Repair</button>
+          <button class="ra-delete" data-id="${item.id}">Delete</button>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  // Wire up row buttons
+  tbody.querySelectorAll('.ra-repair').forEach(btn => {
+    btn.addEventListener('click', () => repairOne(btn.dataset.id));
+  });
+  tbody.querySelectorAll('.ra-delete').forEach(btn => {
+    btn.addEventListener('click', () => deleteOne(btn.dataset.id));
+  });
+}
+
+function updateRemBadge(count, ok) {
+  const badge = document.getElementById('rem-badge');
+  if (count === 0 && ok) {
+    badge.textContent = 'all clear';
+    badge.className = 'rem-badge b-ok';
+  } else if (count > 0) {
+    badge.textContent = `${count} issue${count !== 1 ? 's' : ''}`;
+    badge.className = 'rem-badge';
+  } else {
+    badge.textContent = 'not scanned';
+    badge.className = 'rem-badge b-none';
+  }
+}
+
+async function scanBroken() {
+  const btn = document.getElementById('rem-scan-btn');
+  btn.disabled = true;
+  btn.textContent = 'Scanning…';
+  try {
+    const res  = await fetch('/entities/broken');
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+    remItems = data.data.broken;
+    renderRemTable(remItems);
+  } catch (err) {
+    document.getElementById('rem-content').innerHTML =
+      `<div class="rem-empty" style="color:var(--coral)">Scan failed: ${err.message}</div>`;
+    updateRemBadge(0, false);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Scan now';
+  }
+}
+
+async function repairOne(entityId) {
+  const row     = document.getElementById(`rem-row-${entityId}`);
+  const repBtn  = row?.querySelector('.ra-repair');
+  const delBtn  = row?.querySelector('.ra-delete');
+  if (repBtn) { repBtn.disabled = true; repBtn.textContent = 'Queuing…'; }
+  if (delBtn)   delBtn.disabled = true;
+  try {
+    const res  = await fetch('/reingest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entity_id: entityId }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+    // Register the new job in the pipeline panel so the user can watch progress
+    const job = data.data.jobs?.[0];
+    if (job) {
+      const item = remItems.find(i => i.id === entityId);
+      registerJob(job.job_id, job.entity_id, item ? fmtRemLabel(item) : entityId.slice(0,8));
+      // Open pipeline panel if collapsed
+      document.getElementById('pipeline-empty').style.display = 'none';
+    }
+    // Remove from table
+    row?.remove();
+    remItems = remItems.filter(i => i.id !== entityId);
+    updateAfterRemove();
+  } catch (err) {
+    if (repBtn) { repBtn.disabled = false; repBtn.textContent = 'Repair'; }
+    if (delBtn)   delBtn.disabled = false;
+    alert('Repair failed: ' + err.message);
+  }
+}
+
+async function deleteOne(entityId) {
+  if (!confirm('Delete this entity and all its derived data?')) return;
+  const row    = document.getElementById(`rem-row-${entityId}`);
+  const repBtn = row?.querySelector('.ra-repair');
+  const delBtn = row?.querySelector('.ra-delete');
+  if (repBtn) repBtn.disabled = true;
+  if (delBtn) { delBtn.disabled = true; delBtn.textContent = 'Deleting…'; }
+  try {
+    const res  = await fetch(`/entities/${entityId}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+    row?.remove();
+    remItems = remItems.filter(i => i.id !== entityId);
+    updateAfterRemove();
+  } catch (err) {
+    if (repBtn && repBtn.dataset.id) repBtn.disabled = false;
+    if (delBtn) { delBtn.disabled = false; delBtn.textContent = 'Delete'; }
+    alert('Delete failed: ' + err.message);
+  }
+}
+
+function updateAfterRemove() {
+  const lbl = document.getElementById('rem-toolbar-label');
+  const repairAllBtn = document.getElementById('rem-repair-all-btn');
+  const deleteAllBtn = document.getElementById('rem-delete-all-btn');
+  if (remItems.length === 0) {
+    document.getElementById('rem-content').innerHTML =
+      '<div class="rem-empty" style="color:var(--teal)">✓ No broken ingestions found.</div>';
+    lbl.textContent = 'All clear.';
+    repairAllBtn.disabled = true;
+    deleteAllBtn.disabled = true;
+    updateRemBadge(0, true);
+  } else {
+    const repairable = remItems.filter(i => i.remedy !== 'no_raw');
+    lbl.textContent = `${remItems.length} issue${remItems.length !== 1 ? 's' : ''} · ${repairable.length} repairable`;
+    repairAllBtn.disabled = repairable.length === 0;
+    updateRemBadge(remItems.length, false);
+  }
+}
+
+document.getElementById('rem-scan-btn').addEventListener('click', scanBroken);
+
+document.getElementById('rem-repair-all-btn').addEventListener('click', async () => {
+  const repairable = remItems.filter(i => i.remedy !== 'no_raw');
+  if (repairable.length === 0) return;
+  const btn = document.getElementById('rem-repair-all-btn');
+  btn.disabled = true;
+  btn.textContent = `Queuing ${repairable.length}…`;
+  for (const item of repairable) {
+    await repairOne(item.id).catch(() => {});
+  }
+  btn.textContent = 'Repair all repairable';
+});
+
+document.getElementById('rem-delete-all-btn').addEventListener('click', async () => {
+  if (!confirm(`Delete all ${remItems.length} broken entities and their data?`)) return;
+  const btn = document.getElementById('rem-delete-all-btn');
+  btn.disabled = true;
+  btn.textContent = `Deleting ${remItems.length}…`;
+  const ids = remItems.map(i => i.id);
+  for (const id of ids) {
+    await deleteOne(id).catch(() => {});
+  }
+  btn.textContent = 'Delete all';
+});
+
+/* ── Boot ───────────────────────────────────────────────────────────────────── */
+connectWS();
+updateSubmitState();
+</script>
+</body>
+</html>
