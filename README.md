@@ -479,12 +479,15 @@ All settings are read from environment variables (or a `.env` file). Defaults ar
 
 | Variable | Default | Description |
 |---|---|---|
-| `MCP_PORT` | `3333` | MCP server port (`0` = stdio mode only) |
+| `MCP_PORT` | `3333` | MCP server port (`0` = stdio mode only, no auth layer) |
 | `OBS_PORT` | `4242` | Observability HTTP/WebSocket server port |
-| `OBS_SECRET` | — | Bearer token required on all API requests (leave unset to disable auth) |
+| `OBS_SECRET` | — | Bearer token for the REST/browser API on `OBS_PORT` (leave unset to disable) |
+| `MCP_SECRET` | — | Bearer token for the HTTP MCP endpoint on `MCP_PORT` (leave unset to disable) |
 | `TLS_CERT` | — | Path to TLS certificate file (enables HTTPS/WSS on all servers) |
 | `TLS_KEY` | — | Path to TLS private key file |
-| `LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
+| `LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error`. Pass `--debug` at startup as a shorthand for `LOG_LEVEL=debug` — also enables full request/response logging on all HTTP endpoints and MCP tool call tracing |
+
+> **Note — stdio mode has no auth layer.** When `MCP_PORT=0` the process communicates over its own stdin/stdout pipe; `MCP_SECRET` and `OBS_SECRET` have no effect on it. Only set `MCP_SECRET` when running in HTTP mode and exposing the port outside localhost — most MCP clients (including Claude Desktop) do not send an `Authorization` header, so setting `MCP_SECRET` in a Claude Desktop config will silently block all tool calls with `401 Unauthorized`.
 
 ### Custom prompts
 

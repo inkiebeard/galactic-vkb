@@ -11,6 +11,11 @@ import { createLogger } from './logger.js';
 
 const log = createLogger('vkb');
 
+// ── CLI flags ─────────────────────────────────────────────────────────────────
+if (process.argv.includes('--debug')) {
+  process.env.LOG_LEVEL = 'debug';
+}
+
 async function main(): Promise<void> {
   log.info('Starting up…');
 

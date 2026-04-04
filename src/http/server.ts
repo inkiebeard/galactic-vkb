@@ -93,6 +93,17 @@ export function startObsServer(adapters: Adapters): void {
 
   app.use(express.json({ limit: '50mb' }));
 
+  // ── Debug request/response logging ──────────────────────────────────────────
+  app.use((req, res, next) => {
+    log.debug(`→ ${req.method} ${req.path}`, req.body);
+    const origJson = res.json.bind(res);
+    res.json = function debugJson(body: unknown) {
+      log.debug(`← ${req.method} ${req.path} ${res.statusCode}`, body);
+      return origJson(body);
+    };
+    next();
+  });
+
   // Redirect legacy paths to SPA hash routes (must be before static middleware)
   app.get('/viz',      (_req, res) => res.redirect('/#viz'));
   app.get('/viz/',     (_req, res) => res.redirect('/#viz'));

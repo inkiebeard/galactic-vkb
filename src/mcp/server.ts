@@ -26,8 +26,11 @@ function replyErr(e: unknown): ToolResult {
   return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: String(e) }) }] };
 }
 
-function wrap<T>(fn: () => Promise<T>): Promise<ToolResult> {
-  return fn().then(reply).catch(replyErr);
+function wrap<T>(name: string, args: unknown, fn: () => Promise<T>): Promise<ToolResult> {
+  log.debug(`→ ${name}`, args);
+  return fn()
+    .then(data => { log.debug(`← ${name} ok`); return reply(data); })
+    .catch(e  => { log.debug(`← ${name} error`, String(e)); return replyErr(e); });
 }
 
 export function createMcpServer(adapters: Adapters): McpServer {
@@ -45,13 +48,13 @@ export function createMcpServer(adapters: Adapters): McpServer {
       ref:  z.string().optional().describe('URL or file path to fetch'),
       meta: z.record(z.string(), z.any()).optional().describe('Arbitrary key-value metadata'),
     },
-  }, async (args) => wrap(() => handleIngest(args)));
+  }, async (args) => wrap('vkb_ingest', args, () => handleIngest(args)));
 
   // ── vkb_job ───────────────────────────────────────────────────────────────
   server.registerTool('vkb_job', {
     description: 'Poll a job by ID. Returns current pipeline stage, progress counters, and error detail if failed.',
     inputSchema: { job_id: z.string().uuid().describe('Job ID returned by vkb_ingest or vkb_retune') },
-  }, async ({ job_id }) => wrap(() => handleJob(job_id)));
+  }, async ({ job_id }) => wrap('vkb_job', { job_id }, () => handleJob(job_id)));
 
   // ── vkb_query ─────────────────────────────────────────────────────────────
   server.registerTool('vkb_query', {
@@ -63,7 +66,7 @@ export function createMcpServer(adapters: Adapters): McpServer {
       threshold:        z.number().min(0).max(1).optional().describe('Minimum cosine similarity'),
       include_sections: z.boolean().optional().describe('Include L2 section summaries in results'),
     },
-  }, async (args) => wrap(() => handleQuery(args, adapters)));
+  }, async (args) => wrap('vkb_query', args, () => handleQuery(args, adapters)));
 
   // ── vkb_get ───────────────────────────────────────────────────────────────
   server.registerTool('vkb_get', {
@@ -72,7 +75,7 @@ export function createMcpServer(adapters: Adapters): McpServer {
       id:   z.string().uuid().describe('Entity or chunk UUID'),
       kind: z.enum(['entity', 'chunk']).optional().describe('Force kind detection'),
     },
-  }, async ({ id, kind }) => wrap(() => handleGet(id, kind)));
+  }, async ({ id, kind }) => wrap('vkb_get', { id, kind }, () => handleGet(id, kind)));
 
   // ── vkb_raw ───────────────────────────────────────────────────────────────
   server.registerTool('vkb_raw', {
@@ -81,7 +84,7 @@ export function createMcpServer(adapters: Adapters): McpServer {
       id:   z.string().uuid().describe('Entity or chunk UUID'),
       kind: z.enum(['entity', 'chunk']).optional(),
     },
-  }, async ({ id, kind }) => wrap(() => handleRaw(id, kind, adapters)));
+  }, async ({ id, kind }) => wrap('vkb_raw', { id, kind }, () => handleRaw(id, kind, adapters)));
 
   // ── vkb_relate ────────────────────────────────────────────────────────────
   server.registerTool('vkb_relate', {
@@ -92,7 +95,7 @@ export function createMcpServer(adapters: Adapters): McpServer {
       rel_type:  z.string().describe('Relation type label'),
       weight:    z.number().min(0).max(1).optional().describe('Edge weight; auto-computed from cosine sim if omitted'),
     },
-  }, async (args) => wrap(() => handleRelate(args.source_id, args.target_id, args.rel_type, args.weight)));
+  }, async (args) => wrap('vkb_relate', args, () => handleRelate(args.source_id, args.target_id, args.rel_type, args.weight)));
 
   // ── vkb_neighbors ──────────────────────────────────────────────────────────
   server.registerTool('vkb_neighbors', {
@@ -105,14 +108,14 @@ export function createMcpServer(adapters: Adapters): McpServer {
       max_nodes:      z.number().int().positive().optional().describe('Cap on total nodes returned (default 50)'),
     },
   }, async ({ id, hops, min_confidence, rel_type, max_nodes }) =>
-    wrap(() => handleNeighbors(id, hops ?? 2, min_confidence ?? 0.0, rel_type, max_nodes ?? 50))
+    wrap('vkb_neighbors', { id, hops, min_confidence, rel_type, max_nodes }, () => handleNeighbors(id, hops ?? 2, min_confidence ?? 0.0, rel_type, max_nodes ?? 50))
   );
 
   // ── vkb_delete ────────────────────────────────────────────────────────────
   server.registerTool('vkb_delete', {
     description: 'Delete entity and cascade: chunks, sections, relations, RawStore files. Non-reversible.',
     inputSchema: { id: z.string().uuid().describe('Entity ID to delete') },
-  }, async ({ id }) => wrap(() => handleDelete(id, adapters)));
+  }, async ({ id }) => wrap('vkb_delete', { id }, () => handleDelete(id, adapters)));
 
   // ── vkb_retune ────────────────────────────────────────────────────────────
   server.registerTool('vkb_retune', {
@@ -121,12 +124,12 @@ export function createMcpServer(adapters: Adapters): McpServer {
       scope: z.string().optional().describe('Optional entity type filter'),
       force: z.boolean().optional().describe('Re-process all records, ignoring incremental cursor'),
     },
-  }, async ({ scope, force }) => wrap(() => handleRetune(scope, force)));
+  }, async ({ scope, force }) => wrap('vkb_retune', { scope, force }, () => handleRetune(scope, force)));
 
   // ── vkb_status ────────────────────────────────────────────────────────────
   server.registerTool('vkb_status', {
     description: 'Full system snapshot: counts, queue depth, worker state, config, index status.',
-  }, async () => wrap(() => handleStatus()));
+  }, async () => wrap('vkb_status', {}, () => handleStatus()));
 
   return server;
 }
