@@ -5,7 +5,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 let nodes        = [];
 let links        = [];
 let allRelations = [];
-let resolution   = 'entity';   // 'entity' | 'chunk'
+let resolution   = 'chunk';   // 'entity' | 'chunk'
 let _refreshPending = false;   // debounce WS-triggered refreshes
 
 // ── Three.js bootstrap ────────────────────────────────────────────────────────
