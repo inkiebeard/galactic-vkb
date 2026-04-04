@@ -398,6 +398,92 @@ export async function handleRelate(
   return { relation_id: relId };
 }
 
+// ── Tool: vkb_neighbors ──────────────────────────────────────────────────────
+export async function handleNeighbors(
+  id: string,
+  hops: number = 2,
+  minConfidence: number = 0.0,
+  relType?: string,
+  maxNodes: number = 50,
+) {
+  const db = getPool();
+
+  // Build recursive CTE params. cteParams.push(x) returns new length == $N index.
+  const cteParams: unknown[] = [id, hops, minConfidence, maxNodes];
+  const relTypeClause = relType
+    ? `AND r.rel_type = $${cteParams.push(relType)}`
+    : '';
+
+  const { rows: nodeRows } = await db.query<{ node_id: string; min_hop: number }>(
+    `WITH RECURSIVE subgraph AS (
+       SELECT $1::uuid AS node_id,
+              0        AS hop,
+              ARRAY[$1::uuid] AS visited
+       UNION ALL
+       SELECT
+         CASE WHEN r.source_id = sg.node_id THEN r.target_id
+              ELSE r.source_id END AS node_id,
+         sg.hop + 1,
+         sg.visited || CASE WHEN r.source_id = sg.node_id THEN r.target_id
+                            ELSE r.source_id END
+       FROM subgraph sg
+       JOIN relation r ON (r.source_id = sg.node_id OR r.target_id = sg.node_id)
+       WHERE sg.hop < $2
+         AND r.confidence >= $3
+         ${relTypeClause}
+         AND NOT (
+           CASE WHEN r.source_id = sg.node_id THEN r.target_id
+                ELSE r.source_id END = ANY(sg.visited)
+         )
+     )
+     SELECT node_id, MIN(hop) AS min_hop
+     FROM subgraph
+     GROUP BY node_id
+     LIMIT $4`,
+    cteParams,
+  );
+
+  const nodeIds = nodeRows.map(r => r.node_id);
+  if (nodeIds.length === 0) return { seed_id: id, hops, nodes: [], edges: [] };
+
+  const hopByNode = new Map(nodeRows.map(r => [r.node_id, Number(r.min_hop)]));
+
+  const [{ rows: entityRows }, { rows: chunkRows }] = await Promise.all([
+    db.query<{ id: string; type: string; summary: string | null; status: string }>(
+      `SELECT id, type, summary, status FROM entity WHERE id = ANY($1::uuid[])`,
+      [nodeIds],
+    ),
+    db.query<{ id: string; entity_id: string; seq: number; summary: string | null }>(
+      `SELECT id, entity_id, seq, summary FROM chunk WHERE id = ANY($1::uuid[])`,
+      [nodeIds],
+    ),
+  ]);
+
+  const nodes = [
+    ...entityRows.map(e => ({ ...e, kind: 'entity' as const, hop: hopByNode.get(e.id) ?? 0 })),
+    ...chunkRows.map(c => ({ ...c, kind: 'chunk'  as const, hop: hopByNode.get(c.id) ?? 0 })),
+  ];
+
+  const edgeParams: unknown[] = [nodeIds, minConfidence];
+  const edgeRelTypeClause = relType
+    ? `AND rel_type = $${edgeParams.push(relType)}`
+    : '';
+
+  const { rows: edges } = await db.query(
+    `SELECT id, source_id, target_id, source_kind, target_kind,
+            rel_type, origin, weight, confidence
+     FROM relation
+     WHERE source_id = ANY($1::uuid[])
+       AND target_id = ANY($1::uuid[])
+       AND confidence >= $2
+       ${edgeRelTypeClause}
+     ORDER BY confidence DESC`,
+    edgeParams,
+  );
+
+  return { seed_id: id, hops, nodes, edges };
+}
+
 // ── Tool: vkb_delete ─────────────────────────────────────────────────────────
 export async function handleDelete(id: string, adapters: Adapters) {
   const db = getPool();

@@ -199,10 +199,45 @@ MCP_PORT=0 DATABASE_URL=postgres://vkb:vkb@localhost:5433/vkb \
 | `vkb_get` | Fetch an entity or chunk by ID |
 | `vkb_raw` | Read the raw stored text for an entity or chunk |
 | `vkb_relate` | Assert an explicit relation between two entities |
+| `vkb_neighbors` | Retrieve an N-hop relation subgraph from a seed node |
 | `vkb_delete` | Delete an entity and all its data |
 | `vkb_reingest` | Re-run the ingest pipeline for one or all entities that have stored raw content |
 | `vkb_retune` | Trigger a re-embedding / relation refresh sweep |
 | `vkb_status` | Full system snapshot (counts, queue depth, config) |
+
+### `vkb_relate` — the feedback loop tool
+
+> "The `vkb_relate` tool is underrated. As Claude works with your data and draws connections, you can have it assert new relations back into the graph. Over time Claude becomes a **contributor** to the knowledge base, not just a consumer. That's a genuinely interesting feedback loop."
+
+Every relation asserted via `vkb_relate` is marked `origin: asserted` — it is never pruned by retune sweeps and carries `confidence: 1.0`. This makes Claude's synthesis durable: connections it draws during a session persist and become first-class edges that future queries and `vkb_neighbors` traversals can follow.
+
+Typical pattern:
+```
+# 1. Query for relevant chunks
+vkb_query { text: "transformer attention mechanism" }
+
+# 2. Identify a cross-document insight, then assert it
+vkb_relate { source_id: "<chunk-A>", target_id: "<chunk-B>",
+             rel_type: "shares_mechanism_with" }
+
+# 3. Traverse what's grown
+vkb_neighbors { id: "<chunk-A>", hops: 2 }
+```
+
+### `vkb_neighbors` — N-hop subgraph retrieval
+
+Walks the relation graph outward from a seed node up to `hops` steps (default 2, max 5). Returns:
+
+- **`nodes`** — every reachable entity or chunk, annotated with `kind`, `hop` distance from the seed, and its summary.
+- **`edges`** — all relations *between discovered nodes* (not just the traversal path), enabling local graph rendering or further reasoning.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `id` | required | Seed entity or chunk UUID |
+| `hops` | `2` | Traversal depth (1–5) |
+| `min_confidence` | `0.0` | Skip edges below this confidence |
+| `rel_type` | — | Only follow edges of this type |
+| `max_nodes` | `50` | Cap on total nodes returned |
 
 ---
 

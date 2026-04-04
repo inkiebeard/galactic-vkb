@@ -10,7 +10,7 @@ import { config } from '../config.js';
 import type { Adapters } from '../adapters/registry.js';
 import {
   handleIngest, handleJob, handleQuery, handleGet, handleRaw,
-  handleRelate, handleDelete, handleRetune, handleStatus,
+  handleRelate, handleNeighbors, handleDelete, handleRetune, handleStatus,
 } from './tools.js';
 import { createLogger, setMcpLogTarget } from '../logger.js';
 
@@ -93,6 +93,20 @@ export function createMcpServer(adapters: Adapters): McpServer {
       weight:    z.number().min(0).max(1).optional().describe('Edge weight; auto-computed from cosine sim if omitted'),
     },
   }, async (args) => wrap(() => handleRelate(args.source_id, args.target_id, args.rel_type, args.weight)));
+
+  // ── vkb_neighbors ──────────────────────────────────────────────────────────
+  server.registerTool('vkb_neighbors', {
+    description: 'Retrieve an N-hop relation subgraph starting from a given entity or chunk ID. Returns all reachable nodes (with kind, summary, and hop distance) and the edges between them.',
+    inputSchema: {
+      id:             z.string().uuid().describe('Seed entity or chunk UUID'),
+      hops:           z.number().int().min(1).max(5).optional().describe('Number of hops to traverse (default 2, max 5)'),
+      min_confidence: z.number().min(0).max(1).optional().describe('Minimum edge confidence to follow (default 0)'),
+      rel_type:       z.string().optional().describe('Only traverse edges of this relation type'),
+      max_nodes:      z.number().int().positive().optional().describe('Cap on total nodes returned (default 50)'),
+    },
+  }, async ({ id, hops, min_confidence, rel_type, max_nodes }) =>
+    wrap(() => handleNeighbors(id, hops ?? 2, min_confidence ?? 0.0, rel_type, max_nodes ?? 50))
+  );
 
   // ── vkb_delete ────────────────────────────────────────────────────────────
   server.registerTool('vkb_delete', {
