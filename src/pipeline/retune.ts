@@ -33,15 +33,24 @@ export async function runRetunePipeline(
     emit({ type: 'stage_change', job_id: jobId, stage: 're-embedding' });
     await db.query(`UPDATE job SET stage = 'embedding' WHERE id = $1`, [jobId]);
 
-    const staleFilter = opts.force
-      ? 'TRUE'
-      : `embed_model IS DISTINCT FROM '${config.EMBED_MODEL}'`;
+    const staleParams: unknown[] = [];
+    const staleWhere: string[] = [];
+
+    if (!opts.force) {
+      staleParams.push(config.EMBED_MODEL);
+      staleWhere.push(`embed_model IS DISTINCT FROM $${staleParams.length}`);
+    }
+    if (opts.scope) {
+      staleParams.push(opts.scope);
+      staleWhere.push(`e.type = $${staleParams.length}`);
+    }
+    const staleWhereClause = staleWhere.length ? 'WHERE ' + staleWhere.join(' AND ') : '';
 
     const { rows: staleChunks } = await db.query<{ id: string; raw_store_key: string }>(
       `SELECT c.id, c.raw_store_key FROM chunk c
        JOIN entity e ON e.id = c.entity_id
-       WHERE ${staleFilter}
-       ${opts.scope ? "AND e.type = '" + opts.scope.replace(/'/g, "''") + "'" : ''}`,
+       ${staleWhereClause}`,
+      staleParams,
     );
 
     let reEmbedCount = 0;
