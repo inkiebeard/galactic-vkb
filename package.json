@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "rm -Rf dist/ && tsc && node -e \"const{cpSync,mkdirSync}=require('fs');mkdirSync('dist/db/migrations',{recursive:true});cpSync('src/db/migrations','dist/db/migrations',{recursive:true})\"",
     "pack:mcpb": "npm run build && mcpb pack . vkb.mcpb",
     "start": "node dist/index.js",
     "migrate": "tsx src/db/migrate.ts",
@@ -18,7 +18,7 @@
     "db:reset": "docker compose down -v && docker compose up -d postgres"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.28.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@mozilla/readability": "^0.6.0",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",

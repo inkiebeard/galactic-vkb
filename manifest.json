@@ -6,7 +6,7 @@
   "description": "Vector Knowledge Base — self-contained, local-first semantic memory system",
   "long_description": "vkb is a graph-augmented vector knowledge base that runs entirely on your own machine. It ingests documents and URLs, chunks and embeds them via Ollama, stores vectors in Postgres+pgvector, and builds a typed knowledge graph (sequential, semantic, heuristic, and LLM-extracted relations). Exposed as an MCP server so any MCP-capable host (Claude Desktop, Claude CLI, etc.) can ingest documents, query semantically, traverse the knowledge graph, and inspect raw text — without sending your data to external services.",
   "author": {
-    "name": "aaron"
+    "name": "aaron toomey <aaron@inkiebeard.codes>"
   },
   "keywords": [
     "knowledge-base",
@@ -36,10 +36,41 @@
         "DATABASE_URL":    "${user:database_url}",
         "OLLAMA_BASE_URL": "${user:ollama_base_url}",
         "EMBED_MODEL":     "${user:embed_model}",
+        "EMBED_DIM":       "${user:embed_dim}",
         "LLM_MODEL":       "${user:llm_model}",
-        "RAWSTORE_PATH":   "${user:rawstore_path}",
-        "MCP_PORT":        "0",
-        "LOG_LEVEL":       "${user:log_level}"
+        "RAWSTORE_ADAPTER":     "${user:rawstore_adapter}",
+        "RAWSTORE_PATH":        "${user:rawstore_path}",
+        "CHUNK_SIZE":    "${user:chunk_size}",
+        "CHUNK_OVERLAP": "${user:chunk_overlap}",
+        "SECTION_STRATEGY":        "${user:section_strategy}",
+        "SECTION_SPLIT_THRESHOLD": "${user:section_split_threshold}",
+        "SECTION_WINDOW_SIZE":     "${user:section_window_size}",
+        "SECTION_MAX_SIZE":        "${user:section_max_size}",
+        "RELATION_THRESHOLD":       "${user:relation_threshold}",
+        "RELATION_TOP_K":           "${user:relation_top_k}",
+        "RELATION_CONFIDENCE_STEP": "${user:relation_confidence_step}",
+        "RELATION_TTL_DAYS":        "${user:relation_ttl_days}",
+        "RELATION_PRUNE_THRESHOLD": "${user:relation_prune_threshold}",
+        "LLM_RELATION_EXTRACTION":  "${user:llm_relation_extraction}",
+        "LLM_EXTRACT_CANDIDATES":   "${user:llm_extract_candidates}",
+        "IVFFLAT_THRESHOLD": "${user:ivfflat_threshold}",
+        "IVFFLAT_LISTS":     "${user:ivfflat_lists}",
+        "WORKER_CONCURRENCY":    "${user:worker_concurrency}",
+        "INGEST_MAX_RETRIES":    "${user:ingest_max_retries}",
+        "RETUNE_INTERVAL_HOURS": "${user:retune_interval_hours}",
+        "RETUNE_SUMMARISE":      "${user:retune_summarise}",
+        "JOB_TTL_DAYS":          "${user:job_ttl_days}",
+        "SUMMARY_CONCURRENCY":      "${user:summary_concurrency}",
+        "SUMMARY_MAX_INPUT_CHARS":  "${user:summary_max_input_chars}",
+        "SUMMARY_PROMPT_FILE":          "${user:summary_prompt_file}",
+        "CHUNK_SUMMARY_PROMPT_FILE":    "${user:chunk_summary_prompt_file}",
+        "SECTION_SUMMARY_PROMPT_FILE":  "${user:section_summary_prompt_file}",
+        "RELATION_EXTRACT_PROMPT_FILE": "${user:relation_extract_prompt_file}",
+        "MCP_PORT":   "0",
+        "OBS_PORT":   "${user:obs_port}",
+        "MCP_SECRET": "${user:mcp_secret}",
+        "OBS_SECRET": "${user:obs_secret}",
+        "LOG_LEVEL": "${user:log_level}"
       }
     }
   },
@@ -91,8 +122,7 @@
       "title": "Database URL",
       "description": "PostgreSQL connection string for the vkb database (requires pgvector extension).",
       "required": true,
-      "default": "postgres://vkb:vkb@localhost:5433/vkb",
-      "sensitive": true
+      "default": "postgres://vkb:vkb@localhost:5433/vkb"
     },
     "ollama_base_url": {
       "type": "string",
@@ -108,6 +138,13 @@
       "required": true,
       "default": "nomic-embed-text"
     },
+    "embed_dim": {
+      "type": "string",
+      "title": "Embedding Dimension",
+      "description": "Vector dimension output by the embedding model. Must match the chosen embed_model (e.g. 768 for nomic-embed-text, 1024 for mxbai-embed-large).",
+      "required": false,
+      "default": "768"
+    },
     "llm_model": {
       "type": "string",
       "title": "LLM Model",
@@ -115,12 +152,224 @@
       "required": true,
       "default": "gemma4:e4b"
     },
+    "rawstore_adapter": {
+      "type": "string",
+      "title": "Rawstore Adapter",
+      "description": "Storage backend for raw documents: 'filesystem' (default) or 's3'.",
+      "required": false,
+      "default": "filesystem"
+    },
     "rawstore_path": {
       "type": "directory",
       "title": "Rawstore Path",
-      "description": "Local directory where raw ingested documents are persisted.",
+      "description": "Local directory where raw ingested documents are persisted (filesystem adapter only).",
       "required": false,
       "default": "./rawstore"
+    },
+    "chunk_size": {
+      "type": "string",
+      "title": "Chunk Size",
+      "description": "Target token count per chunk when splitting documents.",
+      "required": false,
+      "default": "512"
+    },
+    "chunk_overlap": {
+      "type": "string",
+      "title": "Chunk Overlap",
+      "description": "Number of tokens of overlap between adjacent chunks.",
+      "required": false,
+      "default": "64"
+    },
+    "section_strategy": {
+      "type": "string",
+      "title": "Section Strategy",
+      "description": "Algorithm used to group chunks into sections: 'similarity_valley' (default) or 'positional'.",
+      "required": false,
+      "default": "similarity_valley"
+    },
+    "section_split_threshold": {
+      "type": "string",
+      "title": "Section Split Threshold",
+      "description": "Cosine-similarity valley threshold below which a new section boundary is created (similarity_valley strategy).",
+      "required": false,
+      "default": "0.65"
+    },
+    "section_window_size": {
+      "type": "string",
+      "title": "Section Window Size",
+      "description": "Number of neighbouring chunks examined when detecting section boundaries.",
+      "required": false,
+      "default": "5"
+    },
+    "section_max_size": {
+      "type": "string",
+      "title": "Section Max Size",
+      "description": "Maximum number of chunks allowed in a single section before a forced split.",
+      "required": false,
+      "default": "8"
+    },
+    "relation_threshold": {
+      "type": "string",
+      "title": "Relation Threshold",
+      "description": "Minimum cosine similarity required to create a semantic relation between chunks.",
+      "required": false,
+      "default": "0.6"
+    },
+    "relation_top_k": {
+      "type": "string",
+      "title": "Relation Top-K",
+      "description": "Number of nearest neighbours considered when building the similarity relation graph.",
+      "required": false,
+      "default": "10"
+    },
+    "relation_confidence_step": {
+      "type": "string",
+      "title": "Relation Confidence Step",
+      "description": "Increment applied to relation confidence scores during retune reinforcement.",
+      "required": false,
+      "default": "0.05"
+    },
+    "relation_ttl_days": {
+      "type": "string",
+      "title": "Relation TTL (days)",
+      "description": "Number of days before un-reinforced heuristic/semantic relations are eligible for pruning.",
+      "required": false,
+      "default": "30"
+    },
+    "relation_prune_threshold": {
+      "type": "string",
+      "title": "Relation Prune Threshold",
+      "description": "Relations with confidence below this value are removed during a retune sweep.",
+      "required": false,
+      "default": "0.6"
+    },
+    "llm_relation_extraction": {
+      "type": "string",
+      "title": "LLM Relation Extraction",
+      "description": "Set to 'false' to disable LLM-based relation extraction and use heuristic relations only.",
+      "required": false,
+      "default": "true"
+    },
+    "llm_extract_candidates": {
+      "type": "string",
+      "title": "LLM Extract Candidates",
+      "description": "Number of top candidate chunk pairs presented to the LLM for relation extraction per entity.",
+      "required": false,
+      "default": "20"
+    },
+    "ivfflat_threshold": {
+      "type": "string",
+      "title": "IVFFlat Threshold",
+      "description": "Minimum number of vectors required before switching the pgvector index from flat to IVFFlat.",
+      "required": false,
+      "default": "1000"
+    },
+    "ivfflat_lists": {
+      "type": "string",
+      "title": "IVFFlat Lists",
+      "description": "Number of IVFFlat index lists (clusters). Higher values improve query speed at large scale.",
+      "required": false,
+      "default": "100"
+    },
+    "worker_concurrency": {
+      "type": "string",
+      "title": "Worker Concurrency",
+      "description": "Maximum number of ingest/retune jobs processed in parallel.",
+      "required": false,
+      "default": "2"
+    },
+    "ingest_max_retries": {
+      "type": "string",
+      "title": "Ingest Max Retries",
+      "description": "Number of times a failed ingest job is retried before being marked as permanently failed.",
+      "required": false,
+      "default": "3"
+    },
+    "retune_interval_hours": {
+      "type": "string",
+      "title": "Retune Interval (hours)",
+      "description": "How often the automatic background retune sweep runs. Set to 0 to disable.",
+      "required": false,
+      "default": "6"
+    },
+    "retune_summarise": {
+      "type": "string",
+      "title": "Retune Summarise",
+      "description": "Set to 'true' to re-generate entity/section summaries during each retune sweep.",
+      "required": false,
+      "default": "false"
+    },
+    "job_ttl_days": {
+      "type": "string",
+      "title": "Job TTL (days)",
+      "description": "Number of days completed/failed job records are retained before being cleaned up.",
+      "required": false,
+      "default": "7"
+    },
+    "summary_concurrency": {
+      "type": "string",
+      "title": "Summary Concurrency",
+      "description": "Maximum parallel LLM calls during chunk summarisation. Higher is faster but increases Ollama load.",
+      "required": false,
+      "default": "4"
+    },
+    "summary_max_input_chars": {
+      "type": "string",
+      "title": "Summary Max Input Characters",
+      "description": "Maximum characters fed into the entity-level summary prompt, to avoid context-window overflow on large documents.",
+      "required": false,
+      "default": "12000"
+    },
+    "summary_prompt_file": {
+      "type": "file",
+      "title": "Entity Summary Prompt File",
+      "description": "Path to a custom Handlebars prompt template for entity-level summarisation. Leave blank to use the built-in prompt.",
+      "required": false,
+      "default": ""
+    },
+    "chunk_summary_prompt_file": {
+      "type": "file",
+      "title": "Chunk Summary Prompt File",
+      "description": "Path to a custom Handlebars prompt template for chunk-level summarisation.",
+      "required": false,
+      "default": ""
+    },
+    "section_summary_prompt_file": {
+      "type": "file",
+      "title": "Section Summary Prompt File",
+      "description": "Path to a custom Handlebars prompt template for section-level summarisation.",
+      "required": false,
+      "default": ""
+    },
+    "relation_extract_prompt_file": {
+      "type": "file",
+      "title": "Relation Extraction Prompt File",
+      "description": "Path to a custom Handlebars prompt template for LLM relation extraction.",
+      "required": false,
+      "default": ""
+    },
+    "obs_port": {
+      "type": "string",
+      "title": "Observability Port",
+      "description": "Port for the HTTP observability/metrics server. Set to 0 to disable.",
+      "required": false,
+      "default": "4242"
+    },
+    "mcp_secret": {
+      "type": "string",
+      "title": "MCP Secret",
+      "description": "Shared secret for authenticating MCP HTTP requests. Leave blank to disable authentication.",
+      "required": false,
+      "sensitive": true,
+      "default": ""
+    },
+    "obs_secret": {
+      "type": "string",
+      "title": "Observability Secret",
+      "description": "Shared secret for authenticating observability server requests. Leave blank to disable authentication.",
+      "required": false,
+      "sensitive": true,
+      "default": ""
     },
     "log_level": {
       "type": "string",

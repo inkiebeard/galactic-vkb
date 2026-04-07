@@ -1,0 +1,28 @@
+# Source / build tooling
+src/
+tsconfig.json
+tsc-errors.txt
+-out
+
+# Dev environment
+.env
+.env.example
+.vscode/
+docker-compose.yml
+scripts/
+
+# Docs (metadata is in manifest.json)
+docs/
+README.md
+
+# Runtime user data — never ship the developer's rawstore
+rawstore/
+
+# TLS certs — user-supplied at runtime via config
+certs/
+
+# Web UI (served separately, not part of the MCP bundle)
+public/
+
+# The bundle output itself
+*.mcpb
