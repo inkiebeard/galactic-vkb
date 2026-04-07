@@ -9,8 +9,12 @@ export interface TlsOptions { cert: Buffer; key: Buffer; }
  */
 export function loadTls(): TlsOptions | null {
   if (!config.TLS_CERT || !config.TLS_KEY) return null;
-  return {
-    cert: readFileSync(config.TLS_CERT),
-    key:  readFileSync(config.TLS_KEY),
-  };
+  try {
+    return {
+      cert: readFileSync(config.TLS_CERT),
+      key:  readFileSync(config.TLS_KEY),
+    };
+  } catch {
+    return null;
+  }
 }

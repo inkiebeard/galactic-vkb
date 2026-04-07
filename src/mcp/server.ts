@@ -16,6 +16,27 @@ import { createLogger, setMcpLogTarget } from '../logger.js';
 
 const log = createLogger('mcp');
 
+// ── Readiness gate ────────────────────────────────────────────────────────────
+// The MCP transport connects immediately on startup so Claude Desktop's
+// `initialize` handshake succeeds, but tool calls are blocked until DB init
+// and worker startup complete.
+//
+// Uses globalThis rather than module-level lets so the flag survives ESM
+// module-instance duplication (confirmed same-PID bug: two instances of this
+// module can be evaluated when the file is imported via different specifier
+// strings, giving `wrap` and `setReady` separate copies of the variables).
+const g = globalThis as typeof globalThis & { __vkbReady?: boolean; __vkbAdapters?: Adapters; __vkbServer?: McpServer };
+
+function getIsReady(): boolean   { return g.__vkbReady    === true; }
+function getAdapters(): Adapters { return g.__vkbAdapters!; }
+
+export function setReady(adapters: Adapters): void {
+  g.__vkbAdapters = adapters;
+  g.__vkbReady    = true;
+  console.error(`DEBUG setReady: isReady=true pid=${process.pid} at=${Date.now()} url=${import.meta.url}`);
+  log.info('MCP server ready');
+}
+
 // ── Envelope helpers ──────────────────────────────────────────────────────────
 type ToolResult = { content: [{ type: 'text'; text: string }] };
 
@@ -27,13 +48,17 @@ function replyErr(e: unknown): ToolResult {
 }
 
 function wrap<T>(name: string, args: unknown, fn: () => Promise<T>): Promise<ToolResult> {
+  if (!getIsReady()) {
+    console.error(`DEBUG wrap: isReady=false pid=${process.pid} at=${Date.now()} url=${import.meta.url} g.__vkbReady=${g.__vkbReady}`);
+    return Promise.resolve(replyErr('Server initializing, please retry in a moment'));
+  }
   log.debug(`→ ${name}`, args);
   return fn()
     .then(data => { log.debug(`← ${name} ok`); return reply(data); })
     .catch(e  => { log.debug(`← ${name} error`, String(e)); return replyErr(e); });
 }
 
-export function createMcpServer(adapters: Adapters): McpServer {
+function buildMcpServer(): McpServer {
   const server = new McpServer(
     { name: 'vkb', version: '0.1.0' },
     { capabilities: { logging: {} } },
@@ -58,15 +83,22 @@ export function createMcpServer(adapters: Adapters): McpServer {
 
   // ── vkb_query ─────────────────────────────────────────────────────────────
   server.registerTool('vkb_query', {
-    description: 'Semantic search. Returns top-k chunks with summaries, entity context, similarity scores, and relations.',
+    description: [
+      'Semantic search over the knowledge base. Returns top-k chunks with summaries, entity context, similarity scores, and relations.',
+      'IMPORTANT — empty results do NOT mean the knowledge base lacks relevant content.',
+      'An empty result set most likely means the similarity threshold is too high for the current query.',
+      'When results is empty: retry with a progressively lower threshold (e.g. 0.5, then 0.3, then 0.1) before concluding no relevant content exists.',
+      'The response includes a hint field when results is empty that suggests the next threshold to try.',
+      'Default threshold is controlled by RELATION_THRESHOLD in config (typically 0.7–0.75). Many valid matches score in the 0.3–0.6 range.',
+    ].join(' '),
     inputSchema: {
       text:             z.string().describe('Query text — embedded on the fly'),
       k:                z.number().int().positive().optional().describe('Max results (default 10)'),
       type:             z.string().optional().describe('Filter by entity type'),
-      threshold:        z.number().min(0).max(1).optional().describe('Minimum cosine similarity'),
+      threshold:        z.number().min(0).max(1).optional().describe('Minimum cosine similarity (default ~0.75). Lower this if you get empty results.'),
       include_sections: z.boolean().optional().describe('Include L2 section summaries in results'),
     },
-  }, async (args) => wrap('vkb_query', args, () => handleQuery(args, adapters)));
+  }, async (args) => wrap('vkb_query', args, () => handleQuery(args, getAdapters())));
 
   // ── vkb_get ───────────────────────────────────────────────────────────────
   server.registerTool('vkb_get', {
@@ -84,7 +116,7 @@ export function createMcpServer(adapters: Adapters): McpServer {
       id:   z.string().uuid().describe('Entity or chunk UUID'),
       kind: z.enum(['entity', 'chunk']).optional(),
     },
-  }, async ({ id, kind }) => wrap('vkb_raw', { id, kind }, () => handleRaw(id, kind, adapters)));
+  }, async ({ id, kind }) => wrap('vkb_raw', { id, kind }, () => handleRaw(id, kind, getAdapters())));
 
   // ── vkb_relate ────────────────────────────────────────────────────────────
   server.registerTool('vkb_relate', {
@@ -115,7 +147,7 @@ export function createMcpServer(adapters: Adapters): McpServer {
   server.registerTool('vkb_delete', {
     description: 'Delete entity and cascade: chunks, sections, relations, RawStore files. Non-reversible.',
     inputSchema: { id: z.string().uuid().describe('Entity ID to delete') },
-  }, async ({ id }) => wrap('vkb_delete', { id }, () => handleDelete(id, adapters)));
+  }, async ({ id }) => wrap('vkb_delete', { id }, () => handleDelete(id, getAdapters())));
 
   // ── vkb_retune ────────────────────────────────────────────────────────────
   server.registerTool('vkb_retune', {
@@ -134,15 +166,20 @@ export function createMcpServer(adapters: Adapters): McpServer {
   return server;
 }
 
-export async function startMcpStdio(adapters: Adapters): Promise<void> {
-  const server = createMcpServer(adapters);
+export function getMcpServer(): McpServer {
+  if (!g.__vkbServer) g.__vkbServer = buildMcpServer();
+  return g.__vkbServer;
+}
+
+export async function startMcpStdio(): Promise<void> {
+  const server = getMcpServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   setMcpLogTarget(server);
   log.info('Listening on stdio');
 }
 
-export async function startMcpHttp(adapters: Adapters, port: number): Promise<void> {
+export async function startMcpHttp(port: number): Promise<void> {
   const app = express();
   app.use(express.json());
 
@@ -177,12 +214,13 @@ export async function startMcpHttp(adapters: Adapters, port: number): Promise<vo
         onsessioninitialized: (sid) => { sessions.set(sid, transport); },
         onsessionclosed: (sid) => { sessions.delete(sid); },
       });
-      const server = createMcpServer(adapters);
+      const server = buildMcpServer();
       await server.connect(transport);
       setMcpLogTarget(server);
       await transport.handleRequest(req, res, req.body);
     } catch (e) {
       if (!res.headersSent) res.status(500).json({ error: String(e) });
+      log.error(`Error handling HTTP request: ${e instanceof Error ? e.stack : String(e)}`);
     }
   });
 
