@@ -222,6 +222,20 @@ export async function handleQuery(payload: QueryPayload, adapters: Adapters) {
     }))).catch(e => log.warn('Lazy relation write failed:', (e as Error).message));
   });
 
+  if (results.length === 0) {
+    const appliedThreshold = minSim;
+    const nextThreshold = appliedThreshold > 0.5 ? 0.5
+                        : appliedThreshold > 0.3 ? 0.3
+                        : appliedThreshold > 0.1 ? 0.1
+                        : null;
+    return {
+      results,
+      hint: nextThreshold !== null
+        ? `No results at threshold=${appliedThreshold.toFixed(2)}. Retry vkb_query with threshold=${nextThreshold} — relevant content may exist at a lower similarity score.`
+        : `No results even at threshold=${appliedThreshold.toFixed(2)}. The knowledge base may not contain content relevant to this query, or embeddings may not be ready yet.`,
+    };
+  }
+
   return { results };
 }
 
