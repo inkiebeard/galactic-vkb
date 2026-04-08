@@ -72,7 +72,8 @@ export async function runIngestPipeline(
     [jobId],
   );
   if (!jobRows[0]) throw new Error(`Job not found: ${jobId}`);
-  const entityId = jobRows[0].entity_id!;
+  const entityId   = jobRows[0].entity_id!;
+  const forceReingest = !!(jobRows[0].progress as JobProgress).force_reingest;
 
   const { rows: entityRows } = await db.query<{
     type: string; ref: string | null; meta: Record<string, unknown>; raw_store_key: string | null;
@@ -94,9 +95,14 @@ export async function runIngestPipeline(
     let rawText: string;
 
     if (entity.raw_store_key) {
-      // Previous attempt already committed entity.md — reuse it directly.
-      // This covers retries after any Phase 2/3 failure (OOM, LLM error, etc.)
-      log.info(`Job ${jobId}: raw already committed at ${entity.raw_store_key}, skipping fetch`);
+      // Rawstore copy exists — always read from it, even for force_reingest.
+      // The rawstore is the preservation layer for content that may no longer
+      // be reachable (dead links, deleted files). Never bypass it.
+      if (forceReingest) {
+        log.info(`Job ${jobId}: force reingest — re-reading raw from ${entity.raw_store_key}, will re-derive all phases`);
+      } else {
+        log.info(`Job ${jobId}: raw already committed at ${entity.raw_store_key}, skipping fetch`);
+      }
       const entityMd = await adapters.rawstore.read(entity.raw_store_key);
       rawText = entityMd.replace(/^---\n[\s\S]*?\n---\n\n?/, '');
     } else {
@@ -160,7 +166,7 @@ export async function runIngestPipeline(
       [entityId],
     );
 
-    if (priorSections.length > 0) {
+    if (priorSections.length > 0 && !forceReingest) {
       // ── Phase 2 already complete — reload state, skip straight to Phase 3 ──
       log.info(
         `Job ${jobId}: Phase 2 already complete (${priorSections.length} sections) — ` +
@@ -293,6 +299,13 @@ export async function runIngestPipeline(
     );
     const existingSecSumMap = new Map(existingSecSums.map(r => [r.id, r.summary]));
 
+    // A summary is considered valid only if it has meaningful content.
+    // Bare truthy checks would cache empty strings or LLM boilerplate responses
+    // (e.g. "Please provide the text you would like me to summarize.") forever.
+    const MIN_SUMMARY_LEN = 20;
+    const isValidSummary  = (s: string | null | undefined): boolean =>
+      (s ?? '').trim().length >= MIN_SUMMARY_LEN;
+
     // Step 9 — Summarise: L1 chunk (parallel) → L2 section → L3 entity
     //
     // Chunk summaries are the dominant cost for large documents. We run up to
@@ -306,17 +319,17 @@ export async function runIngestPipeline(
 
     // Count all already-completed steps so recovery starts with an accurate counter.
     for (const chunkId of chunkIds) {
-      if (existingChunkSumMap.get(chunkId)) summaryStepsDone++;
+      if (isValidSummary(existingChunkSumMap.get(chunkId))) summaryStepsDone++;
     }
     for (const sectionId of sectionIds) {
-      if (existingSecSumMap.get(sectionId)) summaryStepsDone++;
+      if (isValidSummary(existingSecSumMap.get(sectionId))) summaryStepsDone++;
     }
     // entity summary already written on a prior attempt
     const { rows: entitySumRows } = await db.query<{ summary: string | null }>(
       'SELECT summary FROM entity WHERE id = $1',
       [entityId],
     );
-    const entityAlreadySummarised = !!entitySumRows[0]?.summary;
+    const entityAlreadySummarised = isValidSummary(entitySumRows[0]?.summary);
     if (entityAlreadySummarised) summaryStepsDone++;
 
     await patchProgress(db, jobId, {
@@ -326,7 +339,7 @@ export async function runIngestPipeline(
 
     let summarisedCount = 0;
     await pConcurrent(rawChunks, config.SUMMARY_CONCURRENCY, async (chunk, i) => {
-      if (existingChunkSumMap.get(chunkIds[i])) {
+      if (isValidSummary(existingChunkSumMap.get(chunkIds[i]))) {
         summarisedCount++;
         return; // Already summarised in a prior attempt
       }
@@ -346,12 +359,29 @@ export async function runIngestPipeline(
     );
     const chunkSumMap = new Map(chunkSumRows.map(r => [r.id, r.summary ?? '']));
 
+    // Fallback map for section summarisation: if chunk summaries are empty or
+    // invalid, use the raw chunk text so the section prompt always has real content.
+    const rawChunkMap = new Map(chunkIds.map((id, i) => [id, rawChunks[i].text]));
+
     for (let i = 0; i < sections.length; i++) {
-      if (existingSecSumMap.get(sectionIds[i])) {
+      if (isValidSummary(existingSecSumMap.get(sectionIds[i]))) {
         summaryStepsDone++;
         continue; // Already done in a prior attempt
       }
-      const sectionText = sections[i].chunk_ids.map(cid => chunkSumMap.get(cid) ?? '').join('\n\n');
+      const summaries    = sections[i].chunk_ids.map(cid => chunkSumMap.get(cid) ?? '');
+      const anyValid     = summaries.some(s => isValidSummary(s));
+      const sectionText  = anyValid
+        ? summaries.join('\n\n')
+        : sections[i].chunk_ids
+            .map(cid => rawChunkMap.get(cid) ?? '')
+            .join('\n\n')
+            .slice(0, config.SUMMARY_MAX_INPUT_CHARS);
+      if (!sectionText.trim()) {
+        log.warn(`Job ${jobId}: section ${sectionIds[i]} has no content — skipping LLM call`);
+        summaryStepsDone++;
+        await patchProgress(db, jobId, { summary_steps_done: summaryStepsDone });
+        continue;
+      }
       const secSummary = await adapters.llm.complete(prompts.sectionSummary, sectionText);
       await db.query('UPDATE section_summary SET summary = $1 WHERE id = $2', [secSummary.trim(), sectionIds[i]]);
       summaryStepsDone++;
