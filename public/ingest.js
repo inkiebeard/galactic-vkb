@@ -128,6 +128,7 @@ function isTextFile(name) {
   return /\.(txt|md|markdown|html?|csv|json|xml|rst|org|tex|js|ts|py|rb|go|rs|c|cpp|h|java|kt|swift|sql|yaml|yml|toml|sh|bash|zsh|ps1|r|jl|lua|pl|php)$/i.test(name);
 }
 function isEpub(name) { return /\.epub$/i.test(name); }
+function isPdf(name)  { return /\.pdf$/i.test(name); }
 
 async function readFileText(file) {
   return new Promise((resolve, reject) => {
@@ -149,8 +150,7 @@ function collapseWhitespace(text) {
   return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
     .replace(/\t/g, ' ').replace(/ {2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
 }
-async function parseEpub(file) {
-  const buf = await readFileArrayBuffer(file);
+async function parseEpub(file) {  const buf = await readFileArrayBuffer(file);
   const zip = await JSZip.loadAsync(buf);
   const containerXml = await zip.file('META-INF/container.xml')?.async('string');
   if (!containerXml) throw new Error('Missing META-INF/container.xml');
@@ -175,6 +175,24 @@ async function parseEpub(file) {
   }
   if (!parts.length) throw new Error('No readable chapters found in EPUB');
   return collapseWhitespace(parts.join('\n\n'));
+}
+
+const PDFJS_URL        = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4/build/pdf.min.mjs';
+const PDFJS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4/build/pdf.worker.min.mjs';
+
+async function parsePdf(file) {
+  const buf = await readFileArrayBuffer(file);
+  const pdfjsLib = await import(PDFJS_URL);
+  pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
+  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+  const pages = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const tc   = await page.getTextContent();
+    pages.push(tc.items.map(item => item.str ?? '').join(' '));
+  }
+  if (!pages.length) throw new Error('No text found in PDF');
+  return collapseWhitespace(pages.join('\n\n'));
 }
 
 // ── File list rendering ───────────────────────────────────────────────────────
@@ -218,6 +236,9 @@ async function handleFileSelection(input, targetArr, listEl) {
     if (isEpub(f.name)) {
       try { targetArr.push({ ...base, text: await parseEpub(f) }); }
       catch { targetArr.push({ ...base, text: null, skipped: true, skipReason: 'epub parse error' }); }
+    } else if (isPdf(f.name)) {
+      try { targetArr.push({ ...base, text: await parsePdf(f) }); }
+      catch { targetArr.push({ ...base, text: null, skipped: true, skipReason: 'pdf parse error' }); }
     } else if (isTextFile(f.name)) {
       try { targetArr.push({ ...base, text: await readFileText(f) }); }
       catch { targetArr.push({ ...base, text: null, skipped: true, skipReason: 'read error' }); }
@@ -447,6 +468,18 @@ async function pollJob(jobId) {
   }, 2000);
 }
 
+// Default source_context per tab
+const TAB_DEFAULT_CONTEXT = {
+  url:    'external',
+  text:   'self_authored',
+  files:  'external',
+  folder: 'external',
+};
+
+function getSourceContext() {
+  return document.getElementById('source-context')?.value ?? 'external';
+}
+
 async function submitURL() {
   const url   = document.getElementById('url-input').value.trim();
   const tag   = document.getElementById('url-tag').value.trim();
@@ -454,7 +487,7 @@ async function submitURL() {
   const meta  = {};
   if (tag)   meta.tag   = tag;
   if (title) meta.title = title;
-  const d = await postIngest({ type: 'url', ref: url, meta });
+  const d = await postIngest({ type: 'url', ref: url, source_context: getSourceContext(), meta });
   registerJob(d.job_id, d.entity_id, url);
   document.getElementById('url-input').value  = '';
   document.getElementById('url-tag').value    = '';
@@ -467,7 +500,7 @@ async function submitText() {
   const tag   = document.getElementById('text-tag').value.trim();
   const meta  = { title };
   if (tag) meta.tag = tag;
-  const d = await postIngest({ type: 'note', text, meta });
+  const d = await postIngest({ type: 'note', text, source_context: getSourceContext(), meta });
   registerJob(d.job_id, d.entity_id, title);
   document.getElementById('text-content').value = '';
   document.getElementById('text-title').value   = '';
@@ -477,11 +510,12 @@ async function submitText() {
 async function submitFiles(fileArr, tag) {
   const filesList  = document.getElementById('files-list');
   const folderList = document.getElementById('folder-list');
+  const ctx = getSourceContext();
   for (const f of fileArr) {
     if (f.skipped) continue;
     const meta = { filename: f.name, path: f.path };
     if (tag) meta.tag = tag;
-    const d = await postIngest({ type: 'doc', text: f.text, meta });
+    const d = await postIngest({ type: 'doc', text: f.text, source_context: ctx, meta });
     registerJob(d.job_id, d.entity_id, f.name);
   }
   if (activeTab === 'files') { pendingFiles.length = 0; renderFileList(filesList, pendingFiles); }
@@ -712,6 +746,282 @@ async function deleteOne(entityId) {
   }
 }
 
+// ── Entities panel ────────────────────────────────────────────────────────────
+
+/**
+ * Show a styled <dialog> modal and return a Promise that resolves true (confirmed)
+ * or false (cancelled/dismissed).
+ * @param {string} title
+ * @param {string} bodyHtml - already-escaped HTML for the body paragraph
+ * @param {string} confirmLabel
+ * @param {'danger'|'warning'} confirmStyle
+ */
+function showConfirmModal(title, bodyHtml, confirmLabel, confirmStyle) {
+  return new Promise(resolve => {
+    const modal      = document.getElementById('confirm-modal');
+    const titleEl    = document.getElementById('cm-title');
+    const bodyEl     = document.getElementById('cm-body');
+    const confirmBtn = document.getElementById('cm-confirm-btn');
+    const cancelBtn  = document.getElementById('cm-cancel-btn');
+
+    titleEl.textContent  = title;
+    bodyEl.innerHTML     = bodyHtml;
+    confirmBtn.textContent = confirmLabel;
+    confirmBtn.className = confirmStyle;
+
+    const finish = (result) => {
+      modal.close();
+      confirmBtn.removeEventListener('click', onConfirm);
+      cancelBtn.removeEventListener('click',  onCancel);
+      modal.removeEventListener('close',      onClose);
+      resolve(result);
+    };
+    const onConfirm = () => finish(true);
+    const onCancel  = () => finish(false);
+    const onClose   = () => finish(false);   // Esc key
+
+    confirmBtn.addEventListener('click', onConfirm);
+    cancelBtn.addEventListener('click',  onCancel);
+    modal.addEventListener('close',      onClose, { once: true });
+
+    modal.showModal();
+  });
+}
+
+const ENT_PAGE_SIZE = 50;
+let entOffset = 0;
+let entTotal  = 0;
+
+function entLabel(e) {
+  if (e.ref) return e.ref;
+  return e.meta?.title || e.meta?.filename || e.id.slice(0, 8) + '…';
+}
+function ctxChip(ctx) {
+  const labels = { external: 'External', conversation: 'Conversation', self_authored: 'Self-authored' };
+  return `<span class="ent-chip ctx-${ctx}">${labels[ctx] ?? ctx}</span>`;
+}
+function statusChip(st) {
+  return `<span class="ent-chip st-${st}">${st}</span>`;
+}
+
+async function loadEntities(offset = 0) {
+  const search = document.getElementById('ent-search').value.trim();
+  const type   = document.getElementById('ent-filter-type').value;
+  const ctx    = document.getElementById('ent-filter-ctx').value;
+  const status = document.getElementById('ent-filter-status').value;
+  const params = new URLSearchParams({ limit: String(ENT_PAGE_SIZE), offset: String(offset) });
+  if (search) params.set('q', search);
+  if (type)   params.set('type', type);
+  if (ctx)    params.set('source_context', ctx);
+  if (status) params.set('status', status);
+
+  const btn = document.getElementById('ent-load-btn');
+  btn.disabled = true; btn.textContent = 'Loading…';
+  try {
+    const res  = await fetch(`/entities?${params}`);
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+    entOffset = offset;
+    entTotal  = data.data.total;
+    renderEntTable(data.data.entities);
+    updateEntBadge(entTotal);
+    updateEntPagination();
+  } catch (err) {
+    document.getElementById('ent-content').innerHTML =
+      `<div class="rem-empty" style="color:var(--coral)">Load failed: ${window.__vkb.escHtml(err.message)}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Load';
+  }
+}
+
+function updateEntBadge(total) {
+  const badge = document.getElementById('ent-badge');
+  if (badge) badge.textContent = String(total);
+}
+
+function updateEntPagination() {
+  const pag     = document.getElementById('ent-pagination');
+  const prevBtn = document.getElementById('ent-prev-btn');
+  const nextBtn = document.getElementById('ent-next-btn');
+  const lbl     = document.getElementById('ent-page-label');
+  if (entTotal === 0) { pag.style.display = 'none'; return; }
+  pag.style.display = '';
+  const page  = Math.floor(entOffset / ENT_PAGE_SIZE) + 1;
+  const pages = Math.ceil(entTotal / ENT_PAGE_SIZE);
+  lbl.textContent = `${page} / ${pages}  (${entTotal} total)`;
+  prevBtn.disabled = entOffset === 0;
+  nextBtn.disabled = entOffset + ENT_PAGE_SIZE >= entTotal;
+}
+
+function renderEntTable(entities) {
+  const { escHtml } = window.__vkb;
+  const content = document.getElementById('ent-content');
+  if (!entities.length) {
+    content.innerHTML = '<div class="rem-empty">No entities found.</div>';
+    return;
+  }
+  const tbl = document.createElement('table');
+  tbl.className = 'ent-table';
+  tbl.innerHTML = `
+    <thead><tr>
+      <th>Source</th><th>Type</th><th>Context</th><th>Status</th>
+      <th>Chunks</th><th>Sections</th><th>Summary</th><th>Created</th><th>Action</th>
+    </tr></thead>
+    <tbody id="ent-tbody"></tbody>`;
+  content.innerHTML = '';
+  content.appendChild(tbl);
+  const tbody = document.getElementById('ent-tbody');
+  entities.forEach(e => {
+    const tr = document.createElement('tr');
+    tr.id = `ent-row-${e.id}`;
+    const label   = escHtml(entLabel(e));
+    const created = e.created_at ? new Date(e.created_at).toLocaleDateString() : '—';
+    const summary = escHtml(e.summary ?? '—');
+    tr.innerHTML = `
+      <td><div class="ent-ref" title="${label}">${label}</div></td>
+      <td><span class="ent-chip">${escHtml(e.type)}</span></td>
+      <td>${ctxChip(e.source_context ?? 'external')}</td>
+      <td>${statusChip(e.status)}</td>
+      <td style="text-align:center">${e.chunk_count ?? 0}</td>
+      <td style="text-align:center">${e.section_count ?? 0}</td>
+      <td><div class="ent-summary" title="${escHtml(e.summary ?? '')}">${summary}</div></td>
+      <td style="white-space:nowrap;font-size:10px">${created}</td>
+      <td>
+        <div class="rem-action-cell">
+          <button class="ent-reingest-btn" data-id="${e.id}">Reingest</button>
+          <button class="ent-delete-btn" data-id="${e.id}">Delete</button>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+  tbody.querySelectorAll('.ent-reingest-btn').forEach(btn => {
+    btn.addEventListener('click', () => entReingestOne(btn.dataset.id, btn));
+  });
+  tbody.querySelectorAll('.ent-delete-btn').forEach(btn => {
+    btn.addEventListener('click', () => entDeleteOne(btn.dataset.id, btn));
+  });
+}
+
+async function entReingestOne(entityId, btn) {
+  const row   = document.getElementById(`ent-row-${entityId}`);
+  const label = row?.querySelector('.ent-ref')?.textContent ?? entityId.slice(0, 8);
+  const { escHtml } = window.__vkb;
+
+  const ok = await showConfirmModal(
+    'Reingest from scratch?',
+    `All derived data for <strong>${escHtml(label)}</strong> — chunks, sections, and relations — will be cleared and rebuilt from the original raw content. The entity record itself is preserved.`,
+    'Reingest',
+    'warning',
+  );
+  if (!ok) return;
+
+  btn.disabled = true; btn.textContent = 'Queuing…';
+  try {
+    const res  = await fetch('/reingest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entity_id: entityId, force: true }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+    const job = data.data.jobs?.[0];
+    if (job) {
+      registerJob(job.job_id, job.entity_id, label);
+      document.getElementById('pipeline-empty').style.display = 'none';
+    }
+    btn.textContent = 'Queued ✓';
+    setTimeout(() => { btn.disabled = false; btn.textContent = 'Reingest'; }, 3000);
+  } catch (err) {
+    btn.disabled = false; btn.textContent = 'Reingest';
+    alert('Reingest failed: ' + err.message);
+  }
+}
+
+async function entDeleteOne(entityId, btn) {
+  const row   = document.getElementById(`ent-row-${entityId}`);
+  const label = row?.querySelector('.ent-ref')?.textContent ?? entityId.slice(0, 8);
+  const { escHtml } = window.__vkb;
+
+  const ok = await showConfirmModal(
+    'Delete entity?',
+    `<strong>${escHtml(label)}</strong> and all its chunks, sections, relations, and raw stored content will be permanently removed. This cannot be undone.`,
+    'Delete',
+    'danger',
+  );
+  if (!ok) return;
+
+  row?.querySelectorAll('button').forEach(b => { b.disabled = true; });
+  btn.textContent = 'Deleting…';
+  try {
+    const res  = await fetch(`/entities/${entityId}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+    row?.remove();
+    entTotal = Math.max(0, entTotal - 1);
+    updateEntBadge(entTotal);
+    updateEntPagination();
+  } catch (err) {
+    row?.querySelectorAll('button').forEach(b => { b.disabled = false; });
+    btn.textContent = 'Delete';
+    alert('Delete failed: ' + err.message);
+  }
+}
+
+async function populateEntTypeFilter() {
+  try {
+    const res  = await fetch('/entities?limit=200');
+    const data = await res.json();
+    if (!data.ok) return;
+    const types = [...new Set(data.data.entities.map(e => e.type))].sort();
+    const sel   = document.getElementById('ent-filter-type');
+    // Only add options not already present
+    const existing = new Set(Array.from(sel.options).map(o => o.value));
+    types.forEach(t => {
+      if (existing.has(t)) return;
+      const opt = document.createElement('option');
+      opt.value = t; opt.textContent = t;
+      sel.appendChild(opt);
+    });
+  } catch {}
+}
+
+function initEntitiesPanel() {
+  const header  = document.getElementById('ent-card-header');
+  const body    = document.getElementById('ent-body');
+  const chevron = document.getElementById('ent-chevron');
+
+  header.addEventListener('click', () => {
+    const open = body.classList.toggle('open');
+    header.classList.toggle('open', open);
+    chevron.classList.toggle('open', open);
+    header.setAttribute('aria-expanded', String(open));
+    if (open && !document.getElementById('ent-tbody')) {
+      loadEntities(0);
+      populateEntTypeFilter();
+    }
+  });
+
+  // Panel starts open — load immediately
+  loadEntities(0);
+  populateEntTypeFilter();
+
+  document.getElementById('ent-load-btn').addEventListener('click', () => {
+    populateEntTypeFilter();
+    loadEntities(0);
+  });
+  document.getElementById('ent-search').addEventListener('keydown', e => {
+    if (e.key === 'Enter') loadEntities(0);
+  });
+  ['ent-filter-type', 'ent-filter-ctx', 'ent-filter-status'].forEach(id => {
+    document.getElementById(id).addEventListener('change', () => loadEntities(0));
+  });
+  document.getElementById('ent-prev-btn').addEventListener('click', () =>
+    loadEntities(Math.max(0, entOffset - ENT_PAGE_SIZE)));
+  document.getElementById('ent-next-btn').addEventListener('click', () =>
+    loadEntities(entOffset + ENT_PAGE_SIZE));
+}
+
 // ── init() ────────────────────────────────────────────────────────────────────
 
 function init() {
@@ -723,6 +1033,8 @@ function init() {
       btn.classList.add('active');
       activeTab = btn.dataset.tab;
       document.getElementById(`tab-${activeTab}`).classList.add('active');
+      const ctxSel = document.getElementById('source-context');
+      if (ctxSel) ctxSel.value = TAB_DEFAULT_CONTEXT[activeTab] ?? 'external';
       updateSubmitState();
     });
   });
@@ -754,6 +1066,11 @@ function init() {
           return parseEpub(f)
             .then(text => arr.push({ ...base, text }))
             .catch(() => arr.push({ ...base, text: null, skipped: true, skipReason: 'epub parse error' }));
+        }
+        if (isPdf(f.name)) {
+          return parsePdf(f)
+            .then(text => arr.push({ ...base, text }))
+            .catch(() => arr.push({ ...base, text: null, skipped: true, skipReason: 'pdf parse error' }));
         }
         if (!isTextFile(f.name)) {
           arr.push({ ...base, text: null, skipped: true, skipReason: 'unsupported format' });
@@ -814,6 +1131,9 @@ function init() {
     if (open) renderArchive();
   });
   document.getElementById('arc-clear-btn').addEventListener('click', () => { saveArchive([]); renderArchive(); });
+
+  // Entities panel
+  initEntitiesPanel();
 
   // Remediation panel
   document.getElementById('rem-card-header').addEventListener('click', () => {

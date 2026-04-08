@@ -100,6 +100,48 @@
 
 <!-- ── Ingest view ────────────────────────────────────────────────────────── -->
 <div id="view-ingest">
+
+  <!-- Entities panel — full width, expanded by default -->
+  <section id="entities-section">
+    <div id="ent-card">
+      <div id="ent-card-header" class="open" role="button" aria-expanded="true">
+        <span id="ent-card-title">Entities</span>
+        <span class="ent-badge" id="ent-badge">—</span>
+        <span class="rem-chevron open" id="ent-chevron">▼</span>
+      </div>
+      <div id="ent-body" class="open">
+        <div class="ent-toolbar">
+          <input type="search" id="ent-search" placeholder="Search summaries…" autocomplete="off" spellcheck="false">
+          <select id="ent-filter-type" title="Filter by type">
+            <option value="">All types</option>
+          </select>
+          <select id="ent-filter-ctx" title="Filter by source context">
+            <option value="">All contexts</option>
+            <option value="external">External</option>
+            <option value="conversation">Conversation</option>
+            <option value="self_authored">Self-authored</option>
+          </select>
+          <select id="ent-filter-status" title="Filter by status">
+            <option value="">All statuses</option>
+            <option value="ready">ready</option>
+            <option value="processing">processing</option>
+            <option value="pending">pending</option>
+            <option value="error">error</option>
+          </select>
+          <button id="ent-load-btn">Load</button>
+        </div>
+        <div id="ent-content">
+          <div class="rem-empty">Loading…</div>
+        </div>
+        <div id="ent-pagination" style="display:none">
+          <button id="ent-prev-btn" disabled>← Prev</button>
+          <span id="ent-page-label"></span>
+          <button id="ent-next-btn" disabled>Next →</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <main>
     <!-- Left: submission form -->
     <div>
@@ -180,6 +222,16 @@
             </div>
           </div>
 
+          <!-- Source context (shared across all tabs) -->
+          <div class="source-ctx-row">
+            <label for="source-context">Source context</label>
+            <select id="source-context">
+              <option value="external">External — third-party source (URL, epub, article…)</option>
+              <option value="conversation">Conversation — meeting transcript, AI chat history…</option>
+              <option value="self_authored">Self-authored — blog post, note, journal, vlog…</option>
+            </select>
+          </div>
+
           <button class="submit-btn" id="submit-btn" disabled>Ingest</button>
         </div>
       </div>
@@ -250,6 +302,17 @@
     </div>
   </section>
 </div>
+
+<dialog id="confirm-modal">
+  <div class="cm-box">
+    <div class="cm-title" id="cm-title"></div>
+    <div class="cm-body"  id="cm-body"></div>
+    <div class="cm-actions">
+      <button id="cm-cancel-btn">Cancel</button>
+      <button id="cm-confirm-btn">Confirm</button>
+    </div>
+  </div>
+</dialog>
 
 <script type="module" src="/app.js"></script>
 </body>

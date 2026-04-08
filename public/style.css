@@ -265,10 +265,10 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 24px;
-    max-width: 1200px;
+    max-width: 900px;
     width: 100%;
     margin: 0 auto;
-    padding: 32px 24px;
+    padding: 0 16px 32px;
     align-items: start;
   }
   main > div {
@@ -282,12 +282,12 @@
     main {
       grid-template-columns: 1fr;
       gap: 16px;
-      padding: 24px 16px;
+      padding: 0 12px 24px;
     }
   }
   @media (max-width: 480px) {
     main {
-      padding: 16px 12px;
+      padding: 0 10px 16px;
       gap: 12px;
     }
   }
@@ -354,6 +354,18 @@
   @media (max-width: 480px) {
     .meta-row { grid-template-columns: 1fr; gap: 8px; }
   }
+  .source-ctx-row { margin-top: 14px; }
+  .source-ctx-row label { margin-top: 0; }
+  select#source-context {
+    width: 100%; background: var(--bg); border: 0.5px solid var(--line2); border-radius: 5px;
+    color: var(--ink); font-family: var(--mono); font-size: 12px; padding: 8px 10px;
+    outline: none; appearance: none; cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%236b6a65'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center;
+    transition: border-color 0.15s;
+  }
+  select#source-context:focus { border-color: var(--teal-dim); }
+  select#source-context option { background: var(--card); color: var(--ink); }
   .submit-btn {
     width: 100%; margin-top: 16px; padding: 10px;
     background: var(--teal-dim); color: var(--teal); border: 0.5px solid var(--teal-dim);
@@ -490,12 +502,142 @@
   .archived-body .job-card { opacity: 0.75; }
   .archived-body .job-card:hover { opacity: 1; }
 
+  /* ── Entities panel ──────────────────────────────────────────────────────── */
+  #entities-section {
+    width: 100%;
+    max-width: 1600px;
+    margin: 0 auto;
+    padding: 24px 16px 20px;
+  }
+  #ent-card {
+    background: var(--card);
+    border: 0.5px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  #ent-card-header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 14px 16px; cursor: pointer; user-select: none;
+    transition: background 0.1s;
+  }
+  #ent-card-header:hover { background: rgba(255,255,255,0.02); }
+  #ent-card-header.open  { border-bottom: 0.5px solid var(--line); }
+  #ent-card-title {
+    font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--hint); flex: 1;
+  }
+  .ent-badge {
+    font-size: 9px; padding: 2px 7px; border-radius: 3px;
+    background: rgba(255,255,255,0.05); color: var(--hint);
+  }
+  #ent-body      { display: none; }
+  #ent-body.open { display: block; }
+  .ent-toolbar {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+    padding: 12px 16px; border-bottom: 0.5px solid var(--line);
+    background: var(--card2);
+  }
+  #ent-search {
+    flex: 1; min-width: 160px; background: var(--bg);
+    border: 0.5px solid var(--line2); border-radius: 4px;
+    color: var(--ink); font-family: var(--mono); font-size: 11px;
+    padding: 5px 9px; outline: none;
+  }
+  #ent-search:focus { border-color: var(--teal-dim); }
+  .ent-toolbar select {
+    background: var(--bg); border: 0.5px solid var(--line2); border-radius: 4px;
+    color: var(--muted); font-family: var(--mono); font-size: 10px;
+    padding: 5px 8px; outline: none; cursor: pointer;
+  }
+  .ent-toolbar select:focus { border-color: var(--teal-dim); }
+  #ent-load-btn {
+    padding: 5px 14px; background: none; border: 0.5px solid var(--line2);
+    border-radius: 4px; color: var(--muted); font-family: var(--mono); font-size: 10px;
+    cursor: pointer; transition: color 0.1s, border-color 0.1s; flex-shrink: 0;
+  }
+  #ent-load-btn:hover { color: var(--ink); border-color: var(--muted); }
+  #ent-content { overflow-x: auto; }
+  .ent-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .ent-table th {
+    padding: 8px 12px; text-align: left; font-size: 9px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--hint); border-bottom: 0.5px solid var(--line);
+    white-space: nowrap; font-weight: 400;
+  }
+  .ent-table td { padding: 9px 12px; border-bottom: 0.5px solid var(--line); color: var(--muted); vertical-align: middle; }
+  .ent-table tr:last-child td { border-bottom: none; }
+  .ent-table tr:hover td { background: rgba(255,255,255,0.02); }
+  .ent-ref     { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-size: 10px; }
+  .ent-summary { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 10px; }
+  .ent-chip {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 9px; white-space: nowrap;
+    background: rgba(255,255,255,0.05); color: var(--hint);
+  }
+  .ent-chip.ctx-external      { background: #0d1f2d; color: #7ec8e3; }
+  .ent-chip.ctx-conversation  { background: #1d1530; color: var(--purple); }
+  .ent-chip.ctx-self_authored { background: #0e2d20; color: var(--teal); }
+  .ent-chip.st-ready          { background: #0e2d20; color: var(--teal); }
+  .ent-chip.st-error          { background: #2d1414; color: var(--coral); }
+  .ent-chip.st-processing, .ent-chip.st-pending { background: #2a2410; color: var(--amber); }
+  .ent-reingest-btn {
+    padding: 3px 10px; border-radius: 3px; font-family: var(--mono); font-size: 9px;
+    cursor: pointer; background: none; border: 0.5px solid var(--line2); color: var(--muted);
+    transition: background 0.1s, color 0.1s;
+  }
+  .ent-reingest-btn:hover:not(:disabled) { background: #1a2a1a; color: var(--teal); border-color: var(--teal-dim); }
+  .ent-reingest-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .ent-delete-btn {
+    padding: 3px 10px; border-radius: 3px; font-family: var(--mono); font-size: 9px;
+    cursor: pointer; background: none; border: 0.5px solid var(--line2); color: var(--muted);
+    transition: background 0.1s, color 0.1s;
+  }
+  .ent-delete-btn:hover:not(:disabled) { background: #2d1414; color: var(--coral); border-color: #5a2424; }
+  .ent-delete-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  #ent-pagination {
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+    padding: 10px 16px; border-top: 0.5px solid var(--line); font-size: 10px; color: var(--hint);
+  }
+  #ent-pagination button {
+    padding: 4px 12px; background: none; border: 0.5px solid var(--line2);
+    border-radius: 4px; color: var(--muted); font-family: var(--mono); font-size: 10px;
+    cursor: pointer; transition: color 0.1s, border-color 0.1s;
+  }
+  #ent-pagination button:hover:not(:disabled) { color: var(--ink); border-color: var(--muted); }
+  #ent-pagination button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  /* ── Confirm modal ───────────────────────────────────────────────────────── */
+  #confirm-modal {
+    padding: 0; border: none; background: transparent;
+    max-width: 420px; width: 90%;
+  }
+  #confirm-modal::backdrop { background: rgba(0,0,0,0.65); backdrop-filter: blur(2px); }
+  .cm-box {
+    background: var(--card); border: 0.5px solid var(--line2); border-radius: 8px;
+    padding: 24px 24px 20px; display: flex; flex-direction: column; gap: 12px;
+    font-family: var(--mono);
+  }
+  .cm-title { font-size: 13px; font-weight: 600; color: var(--ink); }
+  .cm-body  { font-size: 11px; color: var(--muted); line-height: 1.7; }
+  .cm-body strong { color: var(--ink); }
+  .cm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+  .cm-actions button {
+    padding: 5px 16px; border-radius: 4px; font-family: var(--mono); font-size: 11px;
+    cursor: pointer; transition: background 0.1s, color 0.1s, border-color 0.1s;
+  }
+  #cm-cancel-btn  { background: none; border: 0.5px solid var(--line2); color: var(--muted); }
+  #cm-cancel-btn:hover  { border-color: var(--muted); color: var(--ink); }
+  #cm-confirm-btn { background: none; border: 0.5px solid var(--line2); color: var(--muted); }
+  #cm-confirm-btn.danger  { border-color: #5a2424; color: var(--coral); }
+  #cm-confirm-btn.danger:hover  { background: #2d1414; }
+  #cm-confirm-btn.warning { border-color: #5a4a10; color: var(--amber); }
+  #cm-confirm-btn.warning:hover { background: #2a2410; }
+
   /* ── Remediation panel ───────────────────────────────────────────────────── */
   #remediation {
-    max-width: 1200px;
+    max-width: 900px;
     width: 100%;
     margin: 0 auto;
-    padding: 0 24px 40px;
+    padding: 0 16px 40px;
   }
   #rem-card {
     background: var(--card);
