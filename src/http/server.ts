@@ -148,14 +148,15 @@ export function startObsServer(adapters: Adapters): void {
   // ── Entities ─────────────────────────────────────────────────────────────
   app.get('/entities', auth, async (req, res) => {
     try {
-      const { type, status, q, limit = '50', offset = '0', from, to } = req.query as Record<string, string>;
+      const { type, status, source_context, q, limit = '50', offset = '0', from, to } = req.query as Record<string, string>;
       const params: unknown[] = [];
       const where: string[] = [];
 
-      if (type)   { params.push(type);   where.push(`type = $${params.length}`); }
-      if (status) { params.push(status); where.push(`status = $${params.length}`); }
-      if (from)   { params.push(from);   where.push(`created_at >= $${params.length}`); }
-      if (to)     { params.push(to);     where.push(`created_at <= $${params.length}`); }
+      if (type)           { params.push(type);           where.push(`type = $${params.length}`); }
+      if (status)         { params.push(status);         where.push(`status = $${params.length}`); }
+      if (source_context) { params.push(source_context); where.push(`source_context = $${params.length}`); }
+      if (from)           { params.push(from);           where.push(`created_at >= $${params.length}`); }
+      if (to)             { params.push(to);             where.push(`created_at <= $${params.length}`); }
       if (q) {
         params.push(q);
         where.push(`to_tsvector('english', COALESCE(summary,'')) @@ plainto_tsquery('english', $${params.length})`);
@@ -166,12 +167,14 @@ export function startObsServer(adapters: Adapters): void {
       const off  = Math.max(0,    parseInt(offset, 10) || 0);
 
       const { rows: entities } = await db.query(
-        `SELECT id, type, ref, summary, status, created_at, updated_at, meta
-         FROM entity ${whereClause} ORDER BY created_at DESC LIMIT $${params.length+1} OFFSET $${params.length+2}`,
+        `SELECT id, type, ref, source_context, summary, status, created_at, updated_at, meta,
+                (SELECT COUNT(*) FROM chunk           WHERE entity_id = e.id)::int AS chunk_count,
+                (SELECT COUNT(*) FROM section_summary WHERE entity_id = e.id)::int AS section_count
+         FROM entity e ${whereClause} ORDER BY created_at DESC LIMIT $${params.length+1} OFFSET $${params.length+2}`,
         [...params, lim, off],
       );
       const { rows: cnt } = await db.query<{ cnt: string }>(
-        `SELECT COUNT(*) AS cnt FROM entity ${whereClause}`, params,
+        `SELECT COUNT(*) AS cnt FROM entity e ${whereClause}`, params,
       );
       res.json({ ok: true, data: { entities, total: parseInt(cnt[0]?.cnt ?? '0', 10) } });
     } catch (e) { sendErr(res, e); }
@@ -540,8 +543,8 @@ export function startObsServer(adapters: Adapters): void {
   });
   app.post('/reingest', auth, async (req, res) => {
     try {
-      const { entity_id } = (req.body ?? {}) as { entity_id?: string };
-      const data = await handleReingest(entity_id);
+      const { entity_id, force } = (req.body ?? {}) as { entity_id?: string; force?: boolean };
+      const data = await handleReingest(entity_id, force === true);
       res.json({ ok: true, data });
     } catch (e) { sendErr(res, e, 400); }
   });

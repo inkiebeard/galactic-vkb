@@ -1,6 +1,14 @@
 // ── Domain row types ──────────────────────────────────────────────────────────
 
 export type EntityStatus = 'pending' | 'processing' | 'ready' | 'error';
+
+/**
+ * The provenance context of an ingested entity:
+ * - `external`      — third-party source (URLs, epubs, articles, docs) — **default**
+ * - `conversation`  — transcript of a meeting, chat history with an AI agent, etc.
+ * - `self_authored` — content created by the user (blog post, note, journal entry, vlog, etc.)
+ */
+export type SourceContext = 'external' | 'conversation' | 'self_authored';
 export type JobStage =
   | 'queued' | 'fetching' | 'chunking' | 'embedding'
   | 'sectioning' | 'summarising' | 'extracting' | 'done' | 'error';
@@ -12,6 +20,7 @@ export interface Entity {
   id: string;
   type: string;
   ref: string | null;
+  source_context: SourceContext;
   raw_store_key: string | null;
   summary: string | null;
   summary_version: number;
@@ -65,6 +74,9 @@ export interface JobProgress {
   retry_count: number;
   error_detail?: string;
   from_rawstore?: boolean;
+  /** When true, bypass all self-heal checkpoints: re-fetch raw, re-write entity.md,
+   *  re-chunk and re-embed from scratch. Does not delete the entity or rawstore key. */
+  force_reingest?: boolean;
   /** Total number of LLM summarisation calls for this job (chunks + sections + 1 entity). */
   summary_steps_total?: number;
   /** How many summarisation calls have completed so far. */
@@ -95,6 +107,7 @@ export interface IngestPayload {
   type: string;
   text?: string;
   ref?: string;
+  source_context?: SourceContext;
   meta?: Record<string, unknown>;
 }
 

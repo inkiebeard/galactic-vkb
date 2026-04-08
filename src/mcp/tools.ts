@@ -1,5 +1,6 @@
 import { Pool } from 'pg';
 import { v4 as uuid } from 'uuid';
+import { resolve as resolvePath } from 'path';
 import { config } from '../config.js';
 import { getPool, serializeVector } from '../db/client.js';
 import type { Adapters } from '../adapters/registry.js';
@@ -16,20 +17,41 @@ function ok<T>(data: T)  { return { ok: true  as const, data }; }
 function err(e: unknown) { return { ok: false as const, error: String(e) }; }
 
 // ── Tool: vkb_ingest ──────────────────────────────────────────────────────────
+/** Resolve a ref to its canonical form:
+ * - http/https URLs are kept as-is
+ * - local file paths are resolved to absolute using the process CWD
+ */
+function canonicaliseRef(ref: string): string {
+  if (/^https?:\/\//i.test(ref)) return ref;
+  return resolvePath(ref);
+}
+
+/** Infer a default SourceContext from the ref/type when none is provided. */
+function inferSourceContext(type: string, ref?: string): import('../types.js').SourceContext {
+  if (ref) {
+    // URLs and epub files default to external
+    if (/^https?:\/\//i.test(ref) || /\.epub$/i.test(ref)) return 'external';
+  }
+  // All other cases also default to external unless explicitly overridden
+  return 'external';
+}
+
 export async function handleIngest(payload: IngestPayload) {
   if (!payload || typeof payload !== 'object') throw new Error('Request body is missing or not JSON');
   const db = getPool();
-  const { type, text, ref, meta = {} } = payload;
+  const { type, text, source_context, meta = {} } = payload;
+  const ref = payload.ref ? canonicaliseRef(payload.ref) : undefined;
   if (!type) throw new Error('Field "type" is required (e.g. "url", "doc", "note")');
   if (!text && !ref) throw new Error('At least one of text or ref is required');
 
+  const resolvedContext = source_context ?? inferSourceContext(type, ref);
   const entityId = uuid();
   const jobId    = uuid();
   const ttl      = config.JOB_TTL_DAYS;
 
   await db.query(
-    `INSERT INTO entity (id, type, ref, meta, status) VALUES ($1,$2,$3,$4,'pending')`,
-    [entityId, type, ref ?? null, JSON.stringify(meta)],
+    `INSERT INTO entity (id, type, ref, source_context, meta, status) VALUES ($1,$2,$3,$4,$5,'pending')`,
+    [entityId, type, ref ?? null, resolvedContext, JSON.stringify(meta)],
   );
   await db.query(
     `INSERT INTO job (id, entity_id, kind, stage, expires_at)
@@ -48,19 +70,25 @@ export async function handleIngest(payload: IngestPayload) {
 }
 
 // ── Tool: vkb_reingest ───────────────────────────────────────────────────
-export async function handleReingest(entityId?: string) {
+export async function handleReingest(entityId?: string, force = false) {
   const db = getPool();
   const ttl = config.JOB_TTL_DAYS;
 
-  const { rows: entities } = await db.query<{ id: string }>(    
+  // If force=true we allow reingesting entities that have no rawstore key yet
+  // (e.g. failed before Phase 1 completed), so drop the raw_store_key filter.
+  const { rows: entities } = await db.query<{ id: string }>(
     entityId
-      ? `SELECT id FROM entity WHERE id = $1 AND raw_store_key IS NOT NULL`
+      ? force
+        ? `SELECT id FROM entity WHERE id = $1`
+        : `SELECT id FROM entity WHERE id = $1 AND raw_store_key IS NOT NULL`
       : `SELECT id FROM entity WHERE raw_store_key IS NOT NULL`,
     entityId ? [entityId] : [],
   );
 
   if (entities.length === 0) {
-    throw new Error(entityId ? `Entity ${entityId} not found or has no rawstore data` : 'No entities with rawstore data found');
+    throw new Error(entityId
+      ? `Entity ${entityId} not found${force ? '' : ' or has no rawstore data'}`
+      : 'No entities with rawstore data found');
   }
 
   const jobs: Array<{ job_id: string; entity_id: string }> = [];
@@ -75,23 +103,33 @@ export async function handleReingest(entityId?: string) {
        WHERE entity_id = $1 AND stage NOT IN ('done', 'error')`,
       [entity.id],
     );
-    // Clear existing processing artifacts (chunks cascade to sections via FK)
+    // Clear all derived artifacts — chunks, section_summaries, and entity relations.
+    // Note: section_summary has ON DELETE CASCADE on entity_id, NOT on chunk,
+    // so we must delete sections explicitly before or after deleting chunks.
+    await db.query(`DELETE FROM section_summary WHERE entity_id = $1`, [entity.id]);
     await db.query(`DELETE FROM chunk WHERE entity_id = $1`, [entity.id]);
-    // Clear entity-level relations
     await db.query(
       `DELETE FROM relation WHERE (source_id = $1 OR target_id = $1) AND source_kind = 'entity'`,
       [entity.id],
     );
-    // Reset entity
+    // Reset entity status and summary
     await db.query(
       `UPDATE entity SET status = 'pending', summary = NULL, summary_version = 0, updated_at = NOW() WHERE id = $1`,
       [entity.id],
     );
-    // Queue new ingest job with from_rawstore flag
+
+    // Queue new ingest job
+    // force_reingest tells the pipeline to bypass the Phase 2 "already complete"
+    // checkpoint and re-chunk/re-embed/re-summarise the existing rawstore content
+    // from scratch. raw_store_key is intentionally NOT cleared — the rawstore is
+    // the preservation layer for content that may no longer be reachable.
+    const progressInit = force
+      ? '{"retry_count":0,"force_reingest":true}'
+      : '{"retry_count":0,"from_rawstore":true}';
     await db.query(
       `INSERT INTO job (id, entity_id, kind, stage, progress, expires_at)
-       VALUES ($1, $2, 'ingest', 'queued', '{"retry_count":0,"from_rawstore":true}', NOW() + ($3 || ' days')::interval)`,
-      [jobId, entity.id, ttl],
+       VALUES ($1, $2, 'ingest', 'queued', $3::jsonb, NOW() + ($4 || ' days')::interval)`,
+      [jobId, entity.id, progressInit, ttl],
     );
 
     jobs.push({ job_id: jobId, entity_id: entity.id });

@@ -68,10 +68,13 @@ function buildMcpServer(): McpServer {
   server.registerTool('vkb_ingest', {
     description: 'Submit raw text or a URL/file path for ingestion. Returns job_id and entity_id immediately. Pipeline runs in background.',
     inputSchema: {
-      type: z.string().describe('Entity type label (doc, url, note, code, etc.)'),
-      text: z.string().optional().describe('Inline text content'),
-      ref:  z.string().optional().describe('URL or file path to fetch'),
-      meta: z.record(z.string(), z.any()).optional().describe('Arbitrary key-value metadata'),
+      type:           z.string().describe('Entity type label (doc, url, note, code, etc.)'),
+      text:           z.string().optional().describe('Inline text content'),
+      ref:            z.string().optional().describe('URL or file path to fetch'),
+      source_context: z.enum(['external', 'conversation', 'self_authored']).optional().describe(
+        'Provenance context. "external" = third-party source (URLs, epubs, articles) — default. "conversation" = meeting/chat transcript. "self_authored" = user-created content (blog post, note, journal, vlog).',
+      ),
+      meta:           z.record(z.string(), z.any()).optional().describe('Arbitrary key-value metadata'),
     },
   }, async (args) => wrap('vkb_ingest', args, () => handleIngest(args)));
 
