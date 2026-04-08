@@ -61,6 +61,18 @@ export class ReadabilityFetcher implements FetchAdapter {
     const contentType = res.headers.get('content-type') ?? '';
     const html = await res.text();
 
+    if (contentType.includes('pdf')) {
+      // Re-fetch as binary and extract text with pdf-parse
+      const res2 = await globalThis.fetch(url, {
+        headers: { 'User-Agent': 'vkb/0.1 (semantic knowledge base indexer)' },
+      });
+      const { PDFParse } = await import('pdf-parse');
+      const buf = Buffer.from(await res2.arrayBuffer());
+      const parser = new PDFParse({ data: buf });
+      const result = await parser.getText();
+      return normaliseWhitespace(result.text);
+    }
+
     if (!contentType.includes('html')) {
       // Plain text / markdown / JSON — return as-is
       return html;
@@ -86,6 +98,13 @@ export class ReadabilityFetcher implements FetchAdapter {
   private async fetchFile(filePath: string): Promise<string> {
     const abs = path.resolve(filePath);
     if (!fs.existsSync(abs)) throw new Error(`File not found: ${abs}`);
+    if (/\.pdf$/i.test(abs)) {
+      const { PDFParse } = await import('pdf-parse');
+      const buf = fs.readFileSync(abs);
+      const parser = new PDFParse({ data: buf });
+      const result = await parser.getText();
+      return normaliseWhitespace(result.text);
+    }
     return normaliseWhitespace(fs.readFileSync(abs, 'utf8'));
   }
 }
