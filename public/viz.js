@@ -361,6 +361,9 @@ function pruneEvents(el) {
 // ── Loading overlay ─────────────────────────────────────────────────────────
 const _projLoading = document.getElementById('proj-loading');
 function setLoading(on) {
+  // Don't block the UI with the spinner while the ingest view is active —
+  // the graph is out of view so the projection update is invisible anyway.
+  if (on && document.body.classList.contains('view-ingest')) return;
   _projLoading?.classList.toggle('visible', on);
 }
 
