@@ -36,6 +36,25 @@ function inferSourceContext(type: string, ref?: string): import('../types.js').S
   return 'external';
 }
 
+/**
+ * Normalise tag fields in meta before persisting to the DB.
+ * Both `tag` and `tags` may arrive as comma-separated strings from callers
+ * (e.g. MCP clients, manual ingestion). Convert them to string arrays so the
+ * JSONB column is consistently typed and queryable.
+ */
+function normaliseMetaTags(meta: Record<string, unknown>): Record<string, unknown> {
+  const result = { ...meta };
+  for (const key of ['tag', 'tags'] as const) {
+    if (typeof result[key] === 'string') {
+      result[key] = (result[key] as string)
+        .split(',')
+        .map(t => t.trim())
+        .filter(t => t.length > 0);
+    }
+  }
+  return result;
+}
+
 export async function handleIngest(payload: IngestPayload) {
   if (!payload || typeof payload !== 'object') throw new Error('Request body is missing or not JSON');
   const db = getPool();
@@ -45,13 +64,14 @@ export async function handleIngest(payload: IngestPayload) {
   if (!text && !ref) throw new Error('At least one of text or ref is required');
 
   const resolvedContext = source_context ?? inferSourceContext(type, ref);
+  const normalisedMeta  = normaliseMetaTags(meta);
   const entityId = uuid();
   const jobId    = uuid();
   const ttl      = config.JOB_TTL_DAYS;
 
   await db.query(
     `INSERT INTO entity (id, type, ref, source_context, meta, status) VALUES ($1,$2,$3,$4,$5,'pending')`,
-    [entityId, type, ref ?? null, resolvedContext, JSON.stringify(meta)],
+    [entityId, type, ref ?? null, resolvedContext, JSON.stringify(normalisedMeta)],
   );
   await db.query(
     `INSERT INTO job (id, entity_id, kind, stage, expires_at)
