@@ -188,7 +188,16 @@ function hashF(str, seed) {
   }
   return (h >>> 0) / 0x100000000;
 }
-
+// ── Type-based colour for entity nodes ─────────────────────────────────────────────
+// Each distinct entity type gets a consistent hue derived from the type string.
+const _typeColorCache = new Map();
+function typeColor(type) {
+  if (_typeColorCache.has(type)) return _typeColorCache.get(type);
+  const hue = hashF(type || 'unknown', 0x7c65);
+  const col = new THREE.Color().setHSL(hue, 0.62, 0.42);
+  _typeColorCache.set(type, col);
+  return col;
+}
 // ── Node/Edge colors ──────────────────────────────────────────────────────────
 const NODE_GEO  = new THREE.SphereGeometry(6, 16, 12);
 const CHUNK_GEO = new THREE.SphereGeometry(3, 10, 8);
@@ -196,7 +205,7 @@ const NODE_MAT  = new THREE.MeshLambertMaterial();
 let nodeMesh = null;
 let edgeLine = null;
 
-const NODE_COLORS = {
+const STATUS_COLORS = {
   ready:      new THREE.Color(0x0F6E56),
   processing: new THREE.Color(0x7A6B10),
   error:      new THREE.Color(0x712B13),
@@ -222,7 +231,7 @@ function buildScene() {
   nodes.forEach((n, i) => {
     _mat.setPosition(n.x, n.y, n.z);
     nodeMesh.setMatrixAt(i, _mat);
-    nodeMesh.setColorAt(i, n._color ?? NODE_COLORS[n.status] ?? NODE_COLORS.pending);
+    nodeMesh.setColorAt(i, n._color ?? STATUS_COLORS[n.status] ?? STATUS_COLORS.pending);
   });
   nodeMesh.instanceMatrix.needsUpdate = true;
   nodeMesh.instanceColor.needsUpdate  = true;
@@ -300,6 +309,11 @@ canvas.addEventListener('pointerup', e => {
   if (hits.length) showDetail(nodes[hits[0].instanceId]);
 });
 
+// ── openSidebar ───────────────────────────────────────────────────────────────
+function openSidebar() {
+  document.querySelector('.sidebar')?.classList.remove('collapsed');
+}
+
 // ── showDetail ────────────────────────────────────────────────────────────────
 function showDetail(n) {
   const { escHtml } = window.__vkb;
@@ -307,22 +321,57 @@ function showDetail(n) {
   const relBadges = rels.map(r =>
     '<span class="badge b-' +
     (r.origin?.includes('content') ? 'content' : r.origin === 'asserted' ? 'asserted' : 'semantic') +
-    '">' + (r.origin ?? '') + ' ' + (r.confidence != null ? r.confidence.toFixed(2) : '') + '</span>'
+    '">' + escHtml(r.origin ?? '') + ' ' + (r.confidence != null ? r.confidence.toFixed(2) : '') + '</span>'
   ).join('');
+
+  const el = document.getElementById('detail');
+
+  function tagPills(meta) {
+    const tags = [].concat(meta.tag ?? [], meta.tags ?? []).filter(t => t && String(t).trim());
+    return tags.length
+      ? '<div class="tag-row">' + tags.map(t => '<span class="tag-pill">' + escHtml(String(t)) + '</span>').join('') + '</div>'
+      : '';
+  }
+
   if (resolution === 'chunk') {
-    document.getElementById('detail').innerHTML =
-      '<strong>chunk §' + escHtml(String((n.seq ?? 0) + 1)) + '</strong>' +
-      '<span style="color:var(--hint);font-size:10px"> · entity ' + escHtml((n.entityId ?? '').slice(0, 8)) + '</span><br>' +
-      '<span style="color:var(--hint);font-size:10px">' + n.id + '</span><br><br>' +
-      escHtml(n.summary || n.label || '(no summary yet)') + '<br><br>' +
-      '<div class="pill-row">' + relBadges + '</div>';
+    const meta = n.entityMeta ?? {};
+    const entityLabel = meta.title || meta.filename || n.entityRef || n.entityType || (n.entityId ?? '').slice(0, 8);
+    el.innerHTML =
+      '<div class="det-header"><strong>chunk §' + escHtml(String((n.seq ?? 0) + 1)) + '</strong>' +
+      '<span class="det-hint"> · ' + escHtml(entityLabel) + '</span></div>' +
+      '<div class="det-id">' + escHtml(n.id) + '</div>' +
+      (n.entityRef ? '<div class="det-ref" title="' + escHtml(n.entityRef) + '">' + escHtml(n.entityRef) + '</div>' : '') +
+      tagPills(meta) +
+      '<div class="det-divider"></div>' +
+      '<div class="det-summary">' + escHtml(n.summary || '(no summary yet)') + '</div>' +
+      (relBadges ? '<div class="pill-row">' + relBadges + '</div>' : '');
+    openSidebar();
     return;
   }
-  document.getElementById('detail').innerHTML =
-    '<strong>' + escHtml(n.type) + '</strong><br>' +
-    '<span style="color:var(--hint);font-size:10px">' + n.id + '</span><br><br>' +
-    escHtml(n.summary || n.label || '') + '<br><br>' +
-    '<div class="pill-row">' + relBadges + '</div>';
+
+  // Entity resolution
+  const meta = n.meta ?? {};
+  const metaKeys = Object.keys(meta).filter(k => k !== 'tag' && k !== 'tags');
+  const metaHtml = metaKeys.map(k => {
+    const v = meta[k];
+    const vStr = Array.isArray(v) ? v.join(', ') : String(v ?? '');
+    return '<div class="kv-row"><span class="kv-key">' + escHtml(k) + '</span><span class="kv-val">' + escHtml(vStr) + '</span></div>';
+  }).join('');
+  const typeHex = n._color ? '#' + n._color.getHexString() : 'var(--teal)';
+  el.innerHTML =
+    '<div class="det-type-row">' +
+      '<span class="det-type-dot" style="background:' + typeHex + '"></span>' +
+      '<strong>' + escHtml(n.type) + '</strong>' +
+      '<span class="det-status-chip st-' + escHtml(n.status ?? 'pending') + '">' + escHtml(n.status ?? 'pending') + '</span>' +
+    '</div>' +
+    '<div class="det-id">' + escHtml(n.id) + '</div>' +
+    (n.ref ? '<div class="det-ref" title="' + escHtml(n.ref) + '">' + escHtml(n.ref) + '</div>' : '') +
+    tagPills(meta) +
+    metaHtml +
+    '<div class="det-divider"></div>' +
+    '<div class="det-summary">' + escHtml(n.summary || '(no summary yet)') + '</div>' +
+    (relBadges ? '<div class="pill-row">' + relBadges + '</div>' : '');
+  openSidebar();
 }
 
 // ── WS status ─────────────────────────────────────────────────────────────────
@@ -400,8 +449,12 @@ async function refreshChunks() {
       const color = new THREE.Color().setHSL(hue, 0.55, 0.45);
       // Projection coords are authoritative — always update x/y/z from server
       const pos = { x: p.x, y: p.y, z: p.z };
-      if (ex) return Object.assign(ex, { entityId: p.entity_id, seq: p.seq, label: lbl, summary: p.summary ?? '', _color: color, ...pos });
-      return { id: p.id, entityId: p.entity_id, seq: p.seq, label: lbl, summary: p.summary ?? '', _color: color, ...pos };
+      const fields = {
+        entityId: p.entity_id, entityType: p.entity_type, entityRef: p.entity_ref ?? null,
+        entityMeta: meta, seq: p.seq, label: lbl, summary: p.summary ?? '', _color: color, ...pos,
+      };
+      if (ex) return Object.assign(ex, fields);
+      return { id: p.id, ...fields };
     });
 
     const nodeIds = new Set(nodes.map(n => n.id));
@@ -451,12 +504,18 @@ async function refresh() {
     const points   = projData.data?.points ?? [];
     const existPos = new Map(nodes.map(n => [n.id, n]));
     nodes = points.map(p => {
-      const ex  = existPos.get(p.id);
-      const lbl = (p.summary || p.type || p.id).slice(0, 60);
-      const pos = { x: p.x, y: p.y, z: p.z };
-      return ex
-        ? Object.assign(ex, { type: p.type, status: p.status, label: lbl, summary: p.summary ?? '', ...pos })
-        : { id: p.id, type: p.type, status: p.status, label: lbl, summary: p.summary ?? '', ...pos };
+      const ex   = existPos.get(p.id);
+      const meta = p.meta ?? {};
+      const lbl  = meta.title || meta.filename
+        || (p.ref ? p.ref.split('/').pop()?.split('?')[0] : null)
+        || (p.summary || p.type || p.id).slice(0, 60);
+      const color = typeColor(p.type);
+      const pos  = { x: p.x, y: p.y, z: p.z };
+      const fields = {
+        type: p.type, status: p.status, ref: p.ref ?? null,
+        meta, label: lbl, summary: p.summary ?? '', _color: color, ...pos,
+      };
+      return ex ? Object.assign(ex, fields) : { id: p.id, ...fields };
     });
 
     const nodeIds = new Set(nodes.map(n => n.id));

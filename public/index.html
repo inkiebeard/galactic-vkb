@@ -49,8 +49,12 @@
     <div class="stat">Chunks <span id="s-chunks">—</span></div>
     <div class="stat">Relations <span id="s-relations">—</span></div>
     <div class="stat">Queue <span id="s-queue">—</span></div>
-    <div class="stat" id="ws-status" style="margin-left:auto">connecting…</div>
-    <button id="sidebar-toggle" class="sidebar-toggle" title="Toggle panel">☰</button>
+    <div class="res-toggle hd-res-toggle" style="margin-left:auto">
+      <button class="res-btn" data-res="entity">Entity</button>
+      <button class="res-btn active" data-res="chunk">Chunk</button>
+    </div>
+    <div class="stat" id="ws-status">connecting…</div>
+    <button id="sidebar-toggle" class="sidebar-toggle" title="Toggle details">⊞</button>
   </div>
 
   <!-- Ingest WS indicator (shown in ingest mode) -->
@@ -62,17 +66,10 @@
 
 <!-- ── Viz view ───────────────────────────────────────────────────────────── -->
 <div id="view-viz">
-  <div class="sidebar">
+  <div class="sidebar collapsed">
     <div class="sidebar-mobile-header">
       <span class="sidebar-mobile-title">Details</span>
       <button id="sidebar-close" class="sidebar-close" title="Close">✕</button>
-    </div>
-    <div class="panel">
-      <div class="panel-label">Resolution</div>
-      <div class="res-toggle">
-        <button class="res-btn" data-res="entity">Entities</button>
-        <button class="res-btn active" data-res="chunk">Chunks</button>
-      </div>
     </div>
     <div class="panel">
       <div class="panel-label">Selected node</div>

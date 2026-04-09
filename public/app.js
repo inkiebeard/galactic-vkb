@@ -148,27 +148,27 @@ document.addEventListener('DOMContentLoaded', () => {
   // Wire sys alert dismiss
   document.getElementById('sys-alert-dismiss').addEventListener('click', hideSysAlert);
 
-  // Wire sidebar toggle for mobile (viz view)
+  // Wire sidebar toggle (desktop + mobile)
   const sidebarToggle = document.getElementById('sidebar-toggle');
   const sidebarClose = document.getElementById('sidebar-close');
   const sidebar = document.querySelector('.sidebar');
   if (sidebarToggle && sidebar) {
     sidebarToggle.addEventListener('click', e => {
       e.stopPropagation();
-      sidebar.classList.toggle('mobile-open');
+      sidebar.classList.toggle('collapsed');
     });
   }
   if (sidebarClose && sidebar) {
     sidebarClose.addEventListener('click', e => {
       e.stopPropagation();
-      sidebar.classList.remove('mobile-open');
+      sidebar.classList.add('collapsed');
     });
   }
   // Close sidebar when clicking outside on mobile
   document.addEventListener('click', e => {
-    if (window.innerWidth <= 768 && sidebar && sidebar.classList.contains('mobile-open')) {
+    if (window.innerWidth <= 768 && sidebar && !sidebar.classList.contains('collapsed')) {
       if (!sidebar.contains(e.target) && !sidebarToggle?.contains(e.target)) {
-        sidebar.classList.remove('mobile-open');
+        sidebar.classList.add('collapsed');
       }
     }
   });
