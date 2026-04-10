@@ -1,4 +1,5 @@
 import * as yaml from 'js-yaml';
+import { createHash } from 'crypto';
 import { Pool } from 'pg';
 import { v4 as uuid } from 'uuid';
 import { config } from '../config.js';
@@ -76,8 +77,9 @@ export async function runIngestPipeline(
   const forceReingest = !!(jobRows[0].progress as JobProgress).force_reingest;
 
   const { rows: entityRows } = await db.query<{
-    type: string; ref: string | null; meta: Record<string, unknown>; raw_store_key: string | null;
-  }>('SELECT type, ref, meta, raw_store_key FROM entity WHERE id = $1', [entityId]);
+    type: string; ref: string | null; meta: Record<string, unknown>;
+    raw_store_key: string | null; previous_version_id: string | null;
+  }>('SELECT type, ref, meta, raw_store_key, previous_version_id FROM entity WHERE id = $1', [entityId]);
   if (!entityRows[0]) throw new Error(`Entity not found: ${entityId}`);
   const entity = entityRows[0];
 
@@ -105,6 +107,13 @@ export async function runIngestPipeline(
       }
       const entityMd = await adapters.rawstore.read(entity.raw_store_key);
       rawText = entityMd.replace(/^---\n[\s\S]*?\n---\n\n?/, '');
+      // Keep content_hash up-to-date when re-reading from rawstore (covers
+      // backfilling hash for entities ingested before this migration).
+      const rawstoreHash = createHash('sha256').update(rawText, 'utf8').digest('hex');
+      await db.query(
+        `UPDATE entity SET content_hash = $1, updated_at = NOW() WHERE id = $2 AND content_hash IS DISTINCT FROM $1`,
+        [rawstoreHash, entityId],
+      );
     } else {
       // Step 1 — Acquire raw text
       if (entity.ref) {
@@ -113,6 +122,41 @@ export async function runIngestPipeline(
         // Inline text was stashed in staging by handleIngest
         const stageKey = `staging/${entityId}.txt`;
         rawText = await adapters.rawstore.read(stageKey);
+      }
+
+      // Step 1b — Compute content hash and persist it on entity.
+      // For ref-based entities that were created because a prior ready version
+      // exists (previous_version_id is set): compare hashes. If content is
+      // unchanged, skip the entire pipeline and mark this entity as a duplicate.
+      const contentHash = createHash('sha256').update(rawText, 'utf8').digest('hex');
+      await db.query(
+        `UPDATE entity SET content_hash = $1, updated_at = NOW() WHERE id = $2`,
+        [contentHash, entityId],
+      );
+
+      if (entity.previous_version_id) {
+        const { rows: prevRows } = await db.query<{ content_hash: string | null }>(
+          'SELECT content_hash FROM entity WHERE id = $1',
+          [entity.previous_version_id],
+        );
+        if (prevRows[0]?.content_hash === contentHash) {
+          log.info(
+            `Job ${jobId}: content unchanged (hash ${contentHash.slice(0, 8)}…) — ` +
+            `skipping pipeline, duplicate of ${entity.previous_version_id}`,
+          );
+          await db.query(
+            `UPDATE entity SET status = 'error', updated_at = NOW() WHERE id = $1`,
+            [entityId],
+          );
+          await db.query(
+            `UPDATE job SET stage = 'done', completed_at = NOW(),
+               progress = progress || $1::jsonb
+             WHERE id = $2`,
+            [JSON.stringify({ skipped: true, duplicate_of: entity.previous_version_id }), jobId],
+          );
+          emit({ type: 'complete', job_id: jobId });
+          return;
+        }
       }
 
       // Step 2 — Write entity.md to permanent rawstore (single converged path)

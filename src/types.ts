@@ -22,6 +22,8 @@ export interface Entity {
   ref: string | null;
   source_context: SourceContext;
   raw_store_key: string | null;
+  content_hash: string | null;
+  previous_version_id: string | null;
   summary: string | null;
   summary_version: number;
   meta: Record<string, unknown>;
@@ -81,6 +83,10 @@ export interface JobProgress {
   summary_steps_total?: number;
   /** How many summarisation calls have completed so far. */
   summary_steps_done?: number;
+  /** Set when the ingest was skipped because content is identical to a prior version. */
+  skipped?: boolean;
+  /** Entity ID of the existing entity whose content matched. */
+  duplicate_of?: string;
 }
 
 export interface Job {

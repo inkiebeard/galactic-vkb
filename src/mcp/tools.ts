@@ -1,6 +1,7 @@
 import { Pool } from 'pg';
 import { v4 as uuid } from 'uuid';
 import { resolve as resolvePath } from 'path';
+import { createHash } from 'crypto';
 import { config } from '../config.js';
 import { getPool, serializeVector } from '../db/client.js';
 import type { Adapters } from '../adapters/registry.js';
@@ -55,6 +56,11 @@ function normaliseMetaTags(meta: Record<string, unknown>): Record<string, unknow
   return result;
 }
 
+/** SHA-256 of the raw text body, lower-hex. Used for content-aware dedup. */
+export function computeContentHash(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
 export async function handleIngest(payload: IngestPayload) {
   if (!payload || typeof payload !== 'object') throw new Error('Request body is missing or not JSON');
   const db = getPool();
@@ -65,13 +71,46 @@ export async function handleIngest(payload: IngestPayload) {
 
   const resolvedContext = source_context ?? inferSourceContext(type, ref);
   const normalisedMeta  = normaliseMetaTags(meta);
+  const ttl = config.JOB_TTL_DAYS;
+
+  // ── Dedup: text-only ingests (no ref) ──────────────────────────────────────
+  // Hash the inline text immediately. If an identical ready entity exists, skip
+  // the entire pipeline and return the existing entity.
+  let inlineContentHash: string | null = null;
+  if (text && !ref) {
+    inlineContentHash = computeContentHash(text);
+    const { rows: dupRows } = await db.query<{ id: string }>(
+      `SELECT id FROM entity WHERE content_hash = $1 AND status = 'ready' LIMIT 1`,
+      [inlineContentHash],
+    );
+    if (dupRows[0]) {
+      return { entity_id: dupRows[0].id, job_id: null, skipped: true, reason: 'content_unchanged' };
+    }
+  }
+
+  // ── Version linking: ref-based ingests ────────────────────────────────────
+  // If a ready entity already exists for this ref, record it as the previous
+  // version. The pipeline will fetch the new content, compare hashes, and
+  // either skip (same content) or proceed as a new version (content changed).
+  let previousVersionId: string | null = null;
+  if (ref) {
+    const { rows: priorRows } = await db.query<{ id: string }>(
+      `SELECT id FROM entity WHERE ref = $1 AND status = 'ready' ORDER BY created_at DESC LIMIT 1`,
+      [ref],
+    );
+    if (priorRows[0]) {
+      previousVersionId = priorRows[0].id;
+    }
+  }
+
   const entityId = uuid();
   const jobId    = uuid();
-  const ttl      = config.JOB_TTL_DAYS;
 
   await db.query(
-    `INSERT INTO entity (id, type, ref, source_context, meta, status) VALUES ($1,$2,$3,$4,$5,'pending')`,
-    [entityId, type, ref ?? null, resolvedContext, JSON.stringify(normalisedMeta)],
+    `INSERT INTO entity (id, type, ref, source_context, meta, status, content_hash, previous_version_id)
+     VALUES ($1,$2,$3,$4,$5,'pending',$6,$7)`,
+    [entityId, type, ref ?? null, resolvedContext, JSON.stringify(normalisedMeta),
+     inlineContentHash, previousVersionId],
   );
   await db.query(
     `INSERT INTO job (id, entity_id, kind, stage, expires_at)
@@ -86,7 +125,7 @@ export async function handleIngest(payload: IngestPayload) {
     await adapters.rawstore.write(`staging/${entityId}.txt`, text);
   }
 
-  return { job_id: jobId, entity_id: entityId };
+  return { job_id: jobId, entity_id: entityId, previous_version_id: previousVersionId };
 }
 
 // ── Tool: vkb_reingest ───────────────────────────────────────────────────
@@ -644,6 +683,44 @@ export async function handleStatus() {
       relation_ttl_days:    config.RELATION_TTL_DAYS,
       section_strategy:     config.SECTION_STRATEGY,
     },
+  };
+}
+
+// ── Tool: vkb_migrate ────────────────────────────────────────────────────────
+export async function handleMigrate() {
+  const results: Array<{ file: string; status: 'ok' | 'error'; error?: string }> = [];
+
+  // Wrap runMigrations so we can capture per-file results.
+  // We re-implement the loop here (rather than calling runMigrations directly)
+  // to collect individual file outcomes.
+  const { default: fs }   = await import('fs');
+  const { default: path } = await import('path');
+  const { fileURLToPath } = await import('url');
+  const db = getPool();
+
+  const migrationsDir = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..', 'db', 'migrations',
+  );
+  const files = fs.readdirSync(migrationsDir).filter((f: string) => f.endsWith('.sql')).sort();
+
+  for (const file of files) {
+    try {
+      const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+      await db.query(sql);
+      results.push({ file, status: 'ok' });
+    } catch (e) {
+      results.push({ file, status: 'error', error: String(e) });
+      // Stop on first failure — later migrations may depend on earlier ones.
+      break;
+    }
+  }
+
+  const failed = results.find(r => r.status === 'error');
+  return {
+    ran: results.length,
+    results,
+    ok: !failed,
   };
 }
 

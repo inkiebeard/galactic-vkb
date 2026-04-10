@@ -11,6 +11,7 @@ import type { Adapters } from '../adapters/registry.js';
 import {
   handleIngest, handleJob, handleQuery, handleGet, handleRaw,
   handleRelate, handleNeighbors, handleDelete, handleRetune, handleStatus,
+  handleMigrate,
 } from './tools.js';
 import { createLogger, setMcpLogTarget } from '../logger.js';
 
@@ -165,7 +166,10 @@ function buildMcpServer(): McpServer {
   server.registerTool('vkb_status', {
     description: 'Full system snapshot: counts, queue depth, worker state, config, index status.',
   }, async () => wrap('vkb_status', {}, () => handleStatus()));
-
+  // ── vkb_migrate ──────────────────────────────────────────
+  server.registerTool('vkb_migrate', {
+    description: 'Run all pending SQL migrations against the connected database. Safe to call when the server is already running — migrations are idempotent (IF NOT EXISTS / ON CONFLICT). Returns per-file results.',
+  }, async () => wrap('vkb_migrate', {}, () => handleMigrate()));
   return server;
 }
 
