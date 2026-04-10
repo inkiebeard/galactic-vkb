@@ -9,32 +9,11 @@ import { entityFilePath, chunksFilePath } from '../adapters/rawstore/filesystem.
 import { prompts } from './prompts.js';
 import type { JobProgress, JobStage, Section } from '../types.js';
 import { createLogger } from '../logger.js';
+import { pMap } from '../util/pmap.js';
 
 const log = createLogger('ingest');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-/**
- * Run `fn` over every item in `items` with at most `concurrency` promises in
- * flight simultaneously. Uses a shared cursor so each item is processed exactly
- * once regardless of how fast individual calls resolve.
- */
-async function pConcurrent<T>(
-  items: readonly T[],
-  concurrency: number,
-  fn: (item: T, index: number) => Promise<void>,
-): Promise<void> {
-  let cursor = 0;
-  async function worker() {
-    while (cursor < items.length) {
-      const i = cursor++;
-      await fn(items[i], i);
-    }
-  }
-  await Promise.all(
-    Array.from({ length: Math.min(Math.max(concurrency, 1), items.length) }, worker),
-  );
-}
 
 function emit(msg: object) {
   if (process.send) process.send(msg);
@@ -144,16 +123,16 @@ export async function runIngestPipeline(
             `Job ${jobId}: content unchanged (hash ${contentHash.slice(0, 8)}…) — ` +
             `skipping pipeline, duplicate of ${entity.previous_version_id}`,
           );
+          // NULL out the job FK before deleting the entity so the job row is
+          // preserved as an audit trail (stage=done, skipped=true) without
+          // the entity FK blocking the delete.
           await db.query(
-            `UPDATE entity SET status = 'error', updated_at = NOW() WHERE id = $1`,
-            [entityId],
-          );
-          await db.query(
-            `UPDATE job SET stage = 'done', completed_at = NOW(),
+            `UPDATE job SET entity_id = NULL, stage = 'done', completed_at = NOW(),
                progress = progress || $1::jsonb
              WHERE id = $2`,
             [JSON.stringify({ skipped: true, duplicate_of: entity.previous_version_id }), jobId],
           );
+          await db.query(`DELETE FROM entity WHERE id = $1`, [entityId]);
           emit({ type: 'complete', job_id: jobId });
           return;
         }
@@ -382,7 +361,7 @@ export async function runIngestPipeline(
     });
 
     let summarisedCount = 0;
-    await pConcurrent(rawChunks, config.SUMMARY_CONCURRENCY, async (chunk, i) => {
+    await pMap(rawChunks, config.SUMMARY_CONCURRENCY, async (chunk, i) => {
       if (isValidSummary(existingChunkSumMap.get(chunkIds[i]))) {
         summarisedCount++;
         return; // Already summarised in a prior attempt

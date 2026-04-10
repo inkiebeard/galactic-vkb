@@ -10,6 +10,7 @@ import type {
   RelationRef, RelationKind, RelationOrigin,
 } from '../types.js';
 import { createLogger } from '../logger.js';
+import { pMapSettled } from '../util/pmap.js';
 
 const log = createLogger('query');
 
@@ -126,6 +127,41 @@ export async function handleIngest(payload: IngestPayload) {
   }
 
   return { job_id: jobId, entity_id: entityId, previous_version_id: previousVersionId };
+}
+
+// ── Tool: vkb_ingest_bulk ────────────────────────────────────────────────────
+export async function handleIngestBulk(items: IngestPayload[]): Promise<{
+  queued: number;
+  skipped: number;
+  failed: number;
+  results: Array<{ index: number; entity_id: string; job_id: string | null; skipped?: boolean; reason?: string; error?: string }>;
+}> {
+  // Cap at 10 (== DB pool size) so we never saturate the connection pool.
+  // Each handleIngest does ~4 DB round-trips (dedup check, version lookup,
+  // entity insert, job insert); beyond 10 concurrent callers you're just
+  // queuing work inside pg-pool and adding latency for no throughput gain.
+  const settled = await pMapSettled(items, 10, (item, i) =>
+    handleIngest(item).then(result => ({ index: i, ...result })),
+  );
+
+  let queued  = 0;
+  let skipped = 0;
+  let failed  = 0;
+  const results: Array<{ index: number; entity_id: string; job_id: string | null; skipped?: boolean; reason?: string; error?: string }> = [];
+
+  for (let i = 0; i < settled.length; i++) {
+    const outcome = settled[i];
+    if (outcome.status === 'fulfilled') {
+      const r = outcome.value;
+      results.push(r);
+      if ((r as any).skipped) skipped++; else queued++;
+    } else {
+      results.push({ index: i, entity_id: '', job_id: null, error: String(outcome.reason) });
+      failed++;
+    }
+  }
+
+  return { queued, skipped, failed, results };
 }
 
 // ── Tool: vkb_reingest ───────────────────────────────────────────────────

@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { config } from '../config.js';
 import type { Adapters } from '../adapters/registry.js';
 import {
-  handleIngest, handleJob, handleQuery, handleGet, handleRaw,
+  handleIngest, handleIngestBulk, handleJob, handleQuery, handleGet, handleRaw,
   handleRelate, handleNeighbors, handleDelete, handleRetune, handleStatus,
   handleMigrate,
 } from './tools.js';
@@ -78,6 +78,25 @@ function buildMcpServer(): McpServer {
       meta:           z.record(z.string(), z.any()).optional().describe('Arbitrary key-value metadata'),
     },
   }, async (args) => wrap('vkb_ingest', args, () => handleIngest(args)));
+
+  // ── vkb_ingest_bulk ──────────────────────────────────────────
+  server.registerTool('vkb_ingest_bulk', {
+    description: [
+      'Submit multiple items for ingestion in a single call. Returns a summary with entity_id and job_id for each item.',
+      'Identical content is automatically deduplicated (returns skipped=true for unchanged items).',
+      'Prefer this over repeated vkb_ingest calls when ingesting a website crawl, file listing, or any batch of documents.',
+      'All jobs run concurrently in the background — poll individual job_ids with vkb_job.',
+    ].join(' '),
+    inputSchema: {
+      items: z.array(z.object({
+        type:           z.string().describe('Entity type label (doc, url, note, code, etc.)'),
+        text:           z.string().optional().describe('Inline text content'),
+        ref:            z.string().optional().describe('URL or file path to fetch'),
+        source_context: z.enum(['external', 'conversation', 'self_authored']).optional(),
+        meta:           z.record(z.string(), z.any()).optional(),
+      })).min(1).max(200).describe('Array of ingest payloads (max 200 per call)'),
+    },
+  }, async ({ items }) => wrap('vkb_ingest_bulk', { count: items.length }, () => handleIngestBulk(items)));
 
   // ── vkb_job ───────────────────────────────────────────────────────────────
   server.registerTool('vkb_job', {
