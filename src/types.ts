@@ -12,7 +12,7 @@ export type SourceContext = 'external' | 'conversation' | 'self_authored';
 export type JobStage =
   | 'queued' | 'fetching' | 'chunking' | 'embedding'
   | 'sectioning' | 'summarising' | 'extracting' | 'done' | 'error';
-export type JobKind = 'ingest' | 'retune';
+export type JobKind = 'ingest' | 'retune' | 'finetune';
 export type RelationOrigin = 'content_heuristic' | 'content_llm' | 'semantic' | 'asserted';
 export type RelationKind = 'chunk' | 'entity';
 

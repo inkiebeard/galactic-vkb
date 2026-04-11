@@ -24,6 +24,8 @@ Return ONLY a JSON array. Each element:
 
 Return [] if no meaningful relationships exist. Do not guess or over-relate.`;
 
+const BUILTIN_META_TAG_EXTRACT = `Extract 3-8 concise keyword tags that best represent the main topics, domain, entities, and themes of the following document summary. Return ONLY a JSON array of lowercase short phrases (e.g. ["machine learning", "neural networks", "python"]). Return [] if no meaningful tags can be extracted.`;
+
 function loadOrDefault(filePath: string | undefined, builtin: string): string {
   if (!filePath) return builtin;
   try {
@@ -46,5 +48,8 @@ export const prompts = {
   },
   get relationExtract(): string {
     return loadOrDefault(config.RELATION_EXTRACT_PROMPT_FILE, BUILTIN_RELATION_EXTRACT);
+  },
+  get metaTagExtract(): string {
+    return BUILTIN_META_TAG_EXTRACT;
   },
 };

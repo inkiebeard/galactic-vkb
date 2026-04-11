@@ -165,6 +165,19 @@ export function spawnRetuneWorker(scope?: string, force?: boolean): ChildProcess
   return worker;
 }
 
+export function spawnFinetuneWorker(): ChildProcess {
+  const workerPath = getWorkerPath('finetune');
+  const isTs = workerPath.endsWith('.ts');
+  const args = isTs ? ['--import', 'tsx', workerPath] : [workerPath];
+  const worker = spawn(process.execPath, args, {
+    stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+    env: process.env,
+  });
+  attachHandlers(worker, `finetune#${worker.pid ?? 'x'}`);
+  log.info(`Spawned finetune worker pid=${worker.pid}`);
+  return worker;
+}
+
 // ── Public ────────────────────────────────────────────────────────────────────
 export async function startWorkerPool(): Promise<void> {
   const concurrency = config.WORKER_CONCURRENCY;
@@ -173,6 +186,9 @@ export async function startWorkerPool(): Promise<void> {
     // Stagger spawns
     await new Promise(r => setTimeout(r, 200));
   }
+
+  // Single finetune worker (LLM-heavy, no benefit from concurrency)
+  spawnFinetuneWorker();
 
   // Periodic heartbeat check
   setInterval(() => { void heartbeatCheck(); }, 30_000);

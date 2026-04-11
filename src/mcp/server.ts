@@ -11,7 +11,7 @@ import type { Adapters } from '../adapters/registry.js';
 import {
   handleIngest, handleIngestBulk, handleJob, handleQuery, handleGet, handleRaw,
   handleRelate, handleNeighbors, handleDelete, handleRetune, handleStatus,
-  handleMigrate,
+  handleMigrate, handleFinetune,
 } from './tools.js';
 import { createLogger, setMcpLogTarget } from '../logger.js';
 
@@ -125,7 +125,7 @@ function buildMcpServer(): McpServer {
 
   // ── vkb_get ───────────────────────────────────────────────────────────────
   server.registerTool('vkb_get', {
-    description: 'Fetch entity or chunk by ID. Includes summaries, chunk list, sections, and all relations.',
+    description: 'Fetch entity or chunk by ID. Includes summaries, chunk list, sections, and all relations. Entity responses also include tag_context: co-tagged entities (entity_id, type, summary, tags, shared_tags) so callers can pull related context without extra round-trips.',
     inputSchema: {
       id:   z.string().uuid().describe('Entity or chunk UUID'),
       kind: z.enum(['entity', 'chunk']).optional().describe('Force kind detection'),
@@ -171,6 +171,23 @@ function buildMcpServer(): McpServer {
     description: 'Delete entity and cascade: chunks, sections, relations, RawStore files. Non-reversible.',
     inputSchema: { id: z.string().uuid().describe('Entity ID to delete') },
   }, async ({ id }) => wrap('vkb_delete', { id }, () => handleDelete(id, getAdapters())));
+
+  // ── vkb_finetune ──────────────────────────────────────────────────────────
+  server.registerTool('vkb_finetune', {
+    description: [
+      'Run a targeted fine-tune pass on one or more entities (or the whole KB if no IDs given).',
+      'Stage 1 — linking: LLM relation extraction against the top semantically similar entities, upserted as content_llm relations.',
+      'Stage 2 — tagging: LLM extracts keyword tags from each entity summary, merges them into meta.tags, and asserts tag:* relations to co-tagged entities.',
+      'Unlike vkb_retune (a global sweep that re-embeds stale chunks and re-weights relations), finetune is purely summary-driven — no re-chunking, no re-embedding.',
+      'Returns a job_id for polling with vkb_job.',
+    ].join(' '),
+    inputSchema: {
+      entity_ids: z.array(z.string().uuid()).optional().describe('Limit run to these entity IDs. Omit to process all ready entities.'),
+      scope:      z.string().optional().describe('Optional entity type filter (e.g. "doc", "url")'),
+    },
+  }, async ({ entity_ids, scope }) =>
+    wrap('vkb_finetune', { entity_ids, scope }, () => handleFinetune(entity_ids, scope))
+  );
 
   // ── vkb_retune ────────────────────────────────────────────────────────────
   server.registerTool('vkb_retune', {

@@ -9,7 +9,7 @@ import { UMAP } from 'umap-js';
 import { config } from '../config.js';
 import { getPool, isDbConnectionError } from '../db/client.js';
 import type { Adapters } from '../adapters/registry.js';
-import { handleIngest, handleQuery, handleRetune, handleStatus, handleDelete, handleReingest } from '../mcp/tools.js';
+import { handleIngest, handleQuery, handleRetune, handleStatus, handleDelete, handleReingest, handleFinetune } from '../mcp/tools.js';
 import { createLogger } from '../logger.js';
 import { loadTls } from '../tls.js';
 
@@ -356,6 +356,64 @@ export function startObsServer(adapters: Adapters): void {
     } catch (e) { sendErr(res, e); }
   });
 
+  // ── Bulk entity actions ───────────────────────────────────────────────────
+  // POST /entities/bulk-action { ids: string[], action: 'delete' | 'reingest' | 'reingest_force' }
+  app.post('/entities/bulk-action', auth, async (req, res) => {
+    try {
+      const { ids, action } = (req.body ?? {}) as { ids?: unknown; action?: unknown };
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return void res.status(400).json({ ok: false, error: '"ids" must be a non-empty array' });
+      }
+      if (!['delete', 'reingest', 'reingest_force', 'finetune'].includes(action as string)) {
+        return void res.status(400).json({ ok: false, error: '"action" must be delete, reingest, reingest_force, or finetune' });
+      }
+      const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const invalid = (ids as unknown[]).filter(id => typeof id !== 'string' || !uuidRe.test(id));
+      if (invalid.length > 0) {
+        return void res.status(400).json({ ok: false, error: `Invalid UUIDs: ${invalid.join(', ')}` });
+      }
+      const entityIds = ids as string[];
+      const results: Array<{ id: string; ok: boolean; job_id?: string; error?: string }> = [];
+
+      if (action === 'delete') {
+        for (const id of entityIds) {
+          try {
+            await handleDelete(id, adapters);
+            results.push({ id, ok: true });
+          } catch (e) {
+            results.push({ id, ok: false, error: String(e) });
+          }
+        }
+      } else if (action === 'finetune') {
+        // One job for all selected entities — pipeline handles them together
+        try {
+          const data = await handleFinetune(entityIds);
+          // Return the single job_id paired with each id so the UI can register it
+          for (const id of entityIds) {
+            results.push({ id, ok: true, job_id: data.job_id });
+          }
+        } catch (e) {
+          for (const id of entityIds) {
+            results.push({ id, ok: false, error: String(e) });
+          }
+        }
+      } else {
+        const force = action === 'reingest_force';
+        for (const id of entityIds) {
+          try {
+            const data = await handleReingest(id, force);
+            results.push({ id, ok: true, job_id: data.jobs?.[0]?.job_id });
+          } catch (e) {
+            results.push({ id, ok: false, error: String(e) });
+          }
+        }
+      }
+
+      const failed = results.filter(r => !r.ok).length;
+      res.json({ ok: true, data: { results, succeeded: results.length - failed, failed } });
+    } catch (e) { sendErr(res, e, 400); }
+  });
+
   // ── Chunks: UMAP projection ──────────────────────────────────────────────
   // Returns { id, entity_id, seq, summary, x, y, z } for all embedded chunks.
   // Embeddings are projected from N-dim → 3-dim via UMAP so spatial proximity
@@ -545,6 +603,14 @@ export function startObsServer(adapters: Adapters): void {
     try {
       const { entity_id, force } = (req.body ?? {}) as { entity_id?: string; force?: boolean };
       const data = await handleReingest(entity_id, force === true);
+      res.json({ ok: true, data });
+    } catch (e) { sendErr(res, e, 400); }
+  });
+
+  app.post('/finetune', auth, async (req, res) => {
+    try {
+      const { entity_ids, scope } = (req.body ?? {}) as { entity_ids?: string[]; scope?: string };
+      const data = await handleFinetune(entity_ids, scope);
       res.json({ ok: true, data });
     } catch (e) { sendErr(res, e, 400); }
   });

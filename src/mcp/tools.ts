@@ -449,7 +449,31 @@ export async function handleGet(id: string, kind?: string) {
       'SELECT * FROM relation WHERE source_id = $1 OR target_id = $1 ORDER BY confidence DESC',
       [id],
     );
-    return { ...entRows[0], sections, relations };
+
+    // Tag context: co-tagged entities linked via `tag:*` relations, with their
+    // summaries and the list of shared tags — lets callers avoid extra round-trips.
+    const { rows: tagCtxRows } = await db.query<{
+      entity_id: string; type: string; summary: string | null;
+      tags: unknown; shared_tags: string[];
+    }>(
+      `SELECT
+         e.id                                                           AS entity_id,
+         e.type,
+         e.summary,
+         COALESCE(e.meta->'tags', e.meta->'tag', '[]'::jsonb)          AS tags,
+         array_agg(DISTINCT substring(r.rel_type FROM 5))              AS shared_tags
+       FROM relation r
+       JOIN entity e
+         ON e.id = CASE WHEN r.source_id = $1 THEN r.target_id ELSE r.source_id END
+       WHERE (r.source_id = $1 OR r.target_id = $1)
+         AND r.rel_type LIKE 'tag:%'
+         AND r.source_kind = 'entity' AND r.target_kind = 'entity'
+       GROUP BY e.id, e.type, e.summary, e.meta
+       ORDER BY array_length(array_agg(DISTINCT r.rel_type), 1) DESC, e.id`,
+      [id],
+    );
+
+    return { ...entRows[0], sections, relations, tag_context: tagCtxRows };
   } else {
     const { rows } = await db.query('SELECT * FROM chunk WHERE id = $1', [id]);
     if (!rows[0]) throw new Error(`Chunk not found: ${id}`);
@@ -655,6 +679,27 @@ export async function handleDelete(id: string, adapters: Adapters) {
   await db.query('DELETE FROM relation WHERE source_id = $1 OR target_id = $1', [id]);
 
   return { ok: true };
+}
+
+// ── Tool: vkb_finetune ────────────────────────────────────────────────────────
+/**
+ * Queue a finetune job that runs LLM relation extraction and meta tag
+ * enrichment against entity summaries — no re-chunking or re-embedding.
+ *
+ * @param entityIds - Optional list of entity IDs to scope the run. When
+ *   omitted the pipeline processes all ready entities with a summary.
+ * @param scope - Optional entity type filter (works alongside entityIds).
+ */
+export async function handleFinetune(entityIds?: string[], scope?: string) {
+  const db  = getPool();
+  const ttl = config.JOB_TTL_DAYS;
+  const jobId = uuid();
+  await db.query(
+    `INSERT INTO job (id, kind, stage, progress, expires_at)
+     VALUES ($1,'finetune','queued', $2::jsonb, NOW() + ($3 || ' days')::interval)`,
+    [jobId, JSON.stringify({ retry_count: 0, entity_ids: entityIds ?? null, scope: scope ?? null }), ttl],
+  );
+  return { job_id: jobId };
 }
 
 // ── Tool: vkb_retune ─────────────────────────────────────────────────────────
