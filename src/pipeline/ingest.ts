@@ -15,6 +15,20 @@ const log = createLogger('ingest');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/** Extract all tag strings from entity meta (reads both `tags` and `tag` keys). */
+function extractTagsFromMeta(meta: Record<string, unknown>): string[] {
+  const seen = new Set<string>();
+  for (const key of ['tags', 'tag'] as const) {
+    const v = meta[key];
+    if (Array.isArray(v)) {
+      for (const t of v) {
+        if (typeof t === 'string' && t.trim()) seen.add(t.trim());
+      }
+    }
+  }
+  return [...seen];
+}
+
 function emit(msg: object) {
   if (process.send) process.send(msg);
 }
@@ -497,6 +511,33 @@ export async function runIngestPipeline(
         }
       }
     }
+    // Tag-based entity-entity relations
+    // For every tag on this entity, find all ready entities that share it and
+    // assert a `tag:<name>` relation. These are picked up by vkb_get / vkb_neighbors
+    // without any schema changes.
+    const tagList = extractTagsFromMeta(entity.meta);
+    for (const tag of tagList) {
+      const { rows: taggedEntities } = await db.query<{ id: string }>(
+        `SELECT id FROM entity
+         WHERE id != $1 AND status = 'ready'
+           AND (
+             (meta ? 'tags' AND meta->'tags' @> jsonb_build_array($2::text))
+             OR (meta ? 'tag'  AND meta->'tag'  @> jsonb_build_array($2::text))
+           )`,
+        [entityId, tag],
+      );
+      for (const tagged of taggedEntities) {
+        await db.query(
+          `INSERT INTO relation
+             (id,source_id,target_id,source_kind,target_kind,rel_type,origin,weight,confidence)
+           VALUES ($1,$2,$3,'entity','entity',$4,'content_heuristic',1.0,1.0)
+           ON CONFLICT (source_id,target_id,rel_type) DO NOTHING`,
+          [uuid(), entityId, tagged.id, `tag:${tag}`],
+        );
+        relationsAdded++;
+      }
+    }
+
     await patchProgress(db, jobId, { relations_added: relationsAdded });
 
     // Step 11 — Finalise
