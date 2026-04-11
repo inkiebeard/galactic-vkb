@@ -618,6 +618,29 @@
     transition: background 0.1s, color 0.1s;
   }
   .ent-delete-btn:hover:not(:disabled) { background: #2d1414; color: var(--coral); border-color: #5a2424; }
+
+  /* Bulk selection */
+  .ent-table tr.ent-selected td { background: rgba(93,202,165,0.05); }
+  .ent-cb { width: 14px; height: 14px; cursor: pointer; accent-color: var(--teal); flex-shrink: 0; }
+  #ent-bulk-bar {
+    display: none; align-items: center; flex-wrap: wrap; gap: 8px;
+    padding: 8px 16px; border-bottom: 0.5px solid var(--teal-dim);
+    background: #0b1e18;
+  }
+  #ent-bulk-bar.visible { display: flex; }
+  #ent-bulk-count { font-size: 10px; color: var(--teal); flex: 1; }
+  #ent-bulk-bar button {
+    padding: 4px 12px; border-radius: 4px; font-family: var(--mono); font-size: 10px;
+    cursor: pointer; border: 0.5px solid var(--line2); color: var(--muted);
+    background: none; transition: background 0.1s, color 0.1s;
+  }
+  #ent-bulk-reingest-btn:hover:not(:disabled) { background: #1a2a1a; color: var(--teal); border-color: var(--teal-dim); }
+  #ent-bulk-finetune-btn:hover:not(:disabled) { background: #1a1a2d; color: var(--purple); border-color: #3a346a; }
+  #ent-bulk-reingest-force-btn:hover:not(:disabled) { background: #1a2210; color: var(--amber); border-color: #5a4a10; }
+  #ent-bulk-delete-btn:hover:not(:disabled) { background: #2d1414; color: var(--coral); border-color: #5a2424; }
+  #ent-bulk-clear-btn { color: var(--hint); }
+  #ent-bulk-clear-btn:hover { color: var(--muted); border-color: var(--hint); }
+  #ent-bulk-bar button:disabled { opacity: 0.35; cursor: not-allowed; }
   .ent-delete-btn:disabled { opacity: 0.35; cursor: not-allowed; }
   #ent-pagination {
     display: flex; align-items: center; justify-content: center; gap: 12px;
@@ -635,6 +658,8 @@
   #confirm-modal {
     padding: 0; border: none; background: transparent;
     max-width: 420px; width: 90%;
+    top: 20vh;
+    left: calc(50% - 420px);
   }
   #confirm-modal::backdrop { background: rgba(0,0,0,0.65); backdrop-filter: blur(2px); }
   .cm-box {
@@ -657,6 +682,8 @@
   #cm-confirm-btn.danger:hover  { background: #2d1414; }
   #cm-confirm-btn.warning { border-color: #5a4a10; color: var(--amber); }
   #cm-confirm-btn.warning:hover { background: #2a2410; }
+  #cm-confirm-btn.info    { border-color: #2a2a5a; color: var(--purple); }
+  #cm-confirm-btn.info:hover    { background: #16162a; }
 
   /* ── Remediation panel ───────────────────────────────────────────────────── */
   #remediation {

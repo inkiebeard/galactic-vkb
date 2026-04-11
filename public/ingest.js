@@ -792,6 +792,29 @@ const ENT_PAGE_SIZE = 50;
 let entOffset = 0;
 let entTotal  = 0;
 
+// ── Bulk selection ─────────────────────────────────────────────────────────────────────────────────
+
+const selectedEntIds = new Set();
+
+function updateBulkBar() {
+  const bar     = document.getElementById('ent-bulk-bar');
+  const countEl = document.getElementById('ent-bulk-count');
+  const n       = selectedEntIds.size;
+  if (n === 0) {
+    bar.classList.remove('visible');
+  } else {
+    bar.classList.add('visible');
+    countEl.textContent = `${n} selected`;
+  }
+  // Sync the select-all checkbox header state
+  const selectAllCb = document.getElementById('ent-select-all');
+  if (selectAllCb) {
+    const allInPage = [...document.querySelectorAll('.ent-row-cb')].map(cb => cb.dataset.id);
+    selectAllCb.checked = allInPage.length > 0 && allInPage.every(id => selectedEntIds.has(id));
+    selectAllCb.indeterminate = !selectAllCb.checked && allInPage.some(id => selectedEntIds.has(id));
+  }
+}
+
 function entLabel(e) {
   if (e.ref) return e.ref;
   return e.meta?.title || e.meta?.filename || e.id.slice(0, 8) + '…';
@@ -864,20 +887,35 @@ function renderEntTable(entities) {
   tbl.className = 'ent-table';
   tbl.innerHTML = `
     <thead><tr>
+      <th style="width:28px"><input type="checkbox" id="ent-select-all" class="ent-cb" title="Select all on this page"></th>
       <th>Source</th><th>Type</th><th>Context</th><th>Status</th>
       <th>Chunks</th><th>Sections</th><th>Summary</th><th>Created</th><th>Action</th>
     </tr></thead>
     <tbody id="ent-tbody"></tbody>`;
   content.innerHTML = '';
   content.appendChild(tbl);
+
+  const selectAllCb = document.getElementById('ent-select-all');
+  selectAllCb.addEventListener('change', () => {
+    document.querySelectorAll('.ent-row-cb').forEach(cb => {
+      cb.checked = selectAllCb.checked;
+      if (selectAllCb.checked) selectedEntIds.add(cb.dataset.id);
+      else selectedEntIds.delete(cb.dataset.id);
+      document.getElementById(`ent-row-${cb.dataset.id}`)?.classList.toggle('ent-selected', selectAllCb.checked);
+    });
+    updateBulkBar();
+  });
+
   const tbody = document.getElementById('ent-tbody');
   entities.forEach(e => {
     const tr = document.createElement('tr');
     tr.id = `ent-row-${e.id}`;
+    if (selectedEntIds.has(e.id)) tr.classList.add('ent-selected');
     const label   = escHtml(entLabel(e));
     const created = e.created_at ? new Date(e.created_at).toLocaleDateString() : '—';
     const summary = escHtml(e.summary ?? '—');
     tr.innerHTML = `
+      <td><input type="checkbox" class="ent-row-cb ent-cb" data-id="${e.id}" ${selectedEntIds.has(e.id) ? 'checked' : ''}></td>
       <td><div class="ent-ref" title="${label}">${label}</div></td>
       <td><span class="ent-chip">${escHtml(e.type)}</span></td>
       <td>${ctxChip(e.source_context ?? 'external')}</td>
@@ -895,12 +933,27 @@ function renderEntTable(entities) {
     `;
     tbody.appendChild(tr);
   });
+
+  // Row checkbox handlers
+  tbody.querySelectorAll('.ent-row-cb').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const id = cb.dataset.id;
+      if (cb.checked) selectedEntIds.add(id);
+      else selectedEntIds.delete(id);
+      document.getElementById(`ent-row-${id}`)?.classList.toggle('ent-selected', cb.checked);
+      updateBulkBar();
+    });
+  });
+
   tbody.querySelectorAll('.ent-reingest-btn').forEach(btn => {
     btn.addEventListener('click', () => entReingestOne(btn.dataset.id, btn));
   });
   tbody.querySelectorAll('.ent-delete-btn').forEach(btn => {
     btn.addEventListener('click', () => entDeleteOne(btn.dataset.id, btn));
   });
+
+  // Update select-all indeterminate state after render
+  updateBulkBar();
 }
 
 async function entReingestOne(entityId, btn) {
@@ -968,6 +1021,79 @@ async function entDeleteOne(entityId, btn) {
   }
 }
 
+async function entBulkAction(action) {
+  const ids = [...selectedEntIds];
+  if (ids.length === 0) return;
+  const { escHtml } = window.__vkb;
+
+  const isDelete   = action === 'delete';
+  const isForce    = action === 'reingest_force';
+  const isFinetune = action === 'finetune';
+  const verb       = isDelete ? 'Delete' : isFinetune ? 'Finetune' : isForce ? 'Force-reingest' : 'Reingest';
+  const bodyHtml   = isDelete
+    ? `Permanently delete <strong>${ids.length}</strong> entity${ids.length > 1 ? 's' : ''} and all their chunks, sections, relations, and raw content?`
+    : isFinetune
+      ? `Run a fine-tune pass on <strong>${ids.length}</strong> entity${ids.length > 1 ? 's' : ''}? This will extract LLM relations and enrich metadata tags from summaries — no re-chunking or re-embedding.`
+      : `${isForce ? 'Force-reingest' : 'Reingest'} <strong>${ids.length}</strong> entity${ids.length > 1 ? 's' : ''} from scratch? All derived data will be rebuilt.`;
+  const style = isDelete ? 'danger' : isFinetune ? 'info' : 'warning';
+
+  const confirmed = await showConfirmModal(`${verb} ${ids.length} item${ids.length > 1 ? 's' : ''}?`, bodyHtml, verb, style);
+  if (!confirmed) return;
+
+  const bar = document.getElementById('ent-bulk-bar');
+  bar.querySelectorAll('button').forEach(b => { b.disabled = true; });
+
+  try {
+    const res  = await fetch('/entities/bulk-action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids, action }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+
+    const results = data.data.results ?? [];
+
+    if (isDelete) {
+      // Remove rows that succeeded, keep selection for failed ones
+      for (const r of results) {
+        if (r.ok) {
+          document.getElementById(`ent-row-${r.id}`)?.remove();
+          selectedEntIds.delete(r.id);
+          entTotal = Math.max(0, entTotal - 1);
+        }
+      }
+      updateEntBadge(entTotal);
+      updateEntPagination();
+    } else {
+      // Queue jobs for succeeded items
+      for (const r of results) {
+        if (r.ok && r.job_id) {
+          const row   = document.getElementById(`ent-row-${r.id}`);
+          const label = row?.querySelector('.ent-ref')?.textContent ?? r.id.slice(0, 8);
+          registerJob(r.job_id, r.id, label);
+          document.getElementById('pipeline-empty').style.display = 'none';
+        }
+      }
+    }
+
+    const failed = results.filter(r => !r.ok).length;
+    if (failed > 0) {
+      alert(`${failed} item${failed > 1 ? 's' : ''} failed. ${results.length - failed} succeeded.`);
+    }
+
+    // Clear selection
+    selectedEntIds.clear();
+    document.querySelectorAll('.ent-row-cb').forEach(cb => { cb.checked = false; });
+    document.querySelectorAll('tr.ent-selected').forEach(tr => tr.classList.remove('ent-selected'));
+    updateBulkBar();
+  } catch (err) {
+    alert(`Bulk ${action} failed: ` + err.message);
+  } finally {
+    bar.querySelectorAll('button').forEach(b => { b.disabled = false; });
+  }
+}
+
 async function populateEntTypeFilter() {
   try {
     const res  = await fetch('/entities?limit=200');
@@ -1020,6 +1146,23 @@ function initEntitiesPanel() {
     loadEntities(Math.max(0, entOffset - ENT_PAGE_SIZE)));
   document.getElementById('ent-next-btn').addEventListener('click', () =>
     loadEntities(entOffset + ENT_PAGE_SIZE));
+
+  // Bulk action bar
+  document.getElementById('ent-bulk-clear-btn').addEventListener('click', () => {
+    selectedEntIds.clear();
+    document.querySelectorAll('.ent-row-cb').forEach(cb => { cb.checked = false; });
+    document.querySelectorAll('tr.ent-selected').forEach(tr => tr.classList.remove('ent-selected'));
+    updateBulkBar();
+  });
+
+  document.getElementById('ent-bulk-finetune-btn').addEventListener('click', () =>
+    entBulkAction('finetune'));
+  document.getElementById('ent-bulk-reingest-btn').addEventListener('click', () =>
+    entBulkAction('reingest'));
+  document.getElementById('ent-bulk-reingest-force-btn').addEventListener('click', () =>
+    entBulkAction('reingest_force'));
+  document.getElementById('ent-bulk-delete-btn').addEventListener('click', () =>
+    entBulkAction('delete'));
 }
 
 // ── init() ────────────────────────────────────────────────────────────────────
