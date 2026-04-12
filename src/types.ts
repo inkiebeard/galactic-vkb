@@ -11,7 +11,9 @@ export type EntityStatus = 'pending' | 'processing' | 'ready' | 'error';
 export type SourceContext = 'external' | 'conversation' | 'self_authored';
 export type JobStage =
   | 'queued' | 'fetching' | 'chunking' | 'embedding'
-  | 'sectioning' | 'summarising' | 'extracting' | 'done' | 'error';
+  | 'sectioning' | 'summarising' | 'extracting' | 'done' | 'error'
+  // retune sub-stages
+  | 're_weighting' | 'pruning' | 'indexing' | 'cleaning';
 export type JobKind = 'ingest' | 'retune' | 'finetune';
 export type RelationOrigin = 'content_heuristic' | 'content_llm' | 'semantic' | 'asserted';
 export type RelationKind = 'chunk' | 'entity';

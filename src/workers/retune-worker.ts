@@ -36,7 +36,7 @@ async function claimAndRun(): Promise<boolean> {
 
     const job = rows[0];
     await client.query(
-      `UPDATE job SET worker_pid = $1, stage = 'fetching' WHERE id = $2`,
+      `UPDATE job SET worker_pid = $1, stage = 'embedding' WHERE id = $2`,
       [process.pid, job.id],
     );
     await client.query('COMMIT');

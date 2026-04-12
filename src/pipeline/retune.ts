@@ -27,10 +27,8 @@ export async function runRetunePipeline(
   const db = getPool();
 
   try {
-    await db.query(`UPDATE job SET stage = 'queued' WHERE id = $1`, [jobId]);
-
     // ── 1. Re-embed chunks with stale embed_model ─────────────────────────
-    emit({ type: 'stage_change', job_id: jobId, stage: 're-embedding' });
+    emit({ type: 'stage_change', job_id: jobId, stage: 'embedding' });
     await db.query(`UPDATE job SET stage = 'embedding' WHERE id = $1`, [jobId]);
 
     const staleParams: unknown[] = [];
@@ -79,7 +77,8 @@ export async function runRetunePipeline(
     await patchProgress(db, jobId, { re_embedded: reEmbedCount });
 
     // ── 2. Re-weight existing semantic relations ───────────────────────────
-    emit({ type: 'stage_change', job_id: jobId, stage: 're-weighting' });
+    emit({ type: 'stage_change', job_id: jobId, stage: 're_weighting' });
+    await db.query(`UPDATE job SET stage = 're_weighting' WHERE id = $1`, [jobId]);
 
     const { rows: semanticRels } = await db.query<{
       id: string; source_id: string; target_id: string; confidence: number;
@@ -115,6 +114,7 @@ export async function runRetunePipeline(
 
     // ── 3. Prune stale semantic relations ─────────────────────────────────
     emit({ type: 'stage_change', job_id: jobId, stage: 'pruning' });
+    await db.query(`UPDATE job SET stage = 'pruning' WHERE id = $1`, [jobId]);
 
     const { rows: pruned } = await db.query<{ cnt: string }>(
       `WITH deleted AS (
@@ -131,6 +131,7 @@ export async function runRetunePipeline(
     // ── 4. Re-summarise (opt-in) ──────────────────────────────────────────
     if (config.RETUNE_SUMMARISE && reEmbedCount > 0) {
       emit({ type: 'stage_change', job_id: jobId, stage: 'summarising' });
+      await db.query(`UPDATE job SET stage = 'summarising' WHERE id = $1`, [jobId]);
 
       const { rows: affectedEntities } = await db.query<{ id: string }>(
         `SELECT DISTINCT entity_id AS id FROM chunk WHERE embedded_at > (
@@ -150,10 +151,12 @@ export async function runRetunePipeline(
 
     // ── 5. Manage ivfflat index ───────────────────────────────────────────
     emit({ type: 'stage_change', job_id: jobId, stage: 'indexing' });
+    await db.query(`UPDATE job SET stage = 'indexing' WHERE id = $1`, [jobId]);
     await manageIvfflat(db);
 
     // ── 6. Job TTL cleanup ────────────────────────────────────────────────
     emit({ type: 'stage_change', job_id: jobId, stage: 'cleaning' });
+    await db.query(`UPDATE job SET stage = 'cleaning' WHERE id = $1`, [jobId]);
 
     await db.query(
       `DELETE FROM job WHERE expires_at < NOW() AND stage IN ('done','error') AND id != $1`,
