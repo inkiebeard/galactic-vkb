@@ -4,13 +4,39 @@
 
 // ── State ────────────────────────────────────────────────────────────────────
 
-const STAGES        = ['queued','fetching','chunking','embedding','sectioning','summarising','extracting','done'];
-const STAGE_IDX     = Object.fromEntries(STAGES.map((s, i) => [s, i]));
-const ACTIVE_STAGES = new Set(['queued','fetching','chunking','embedding','sectioning','summarising','extracting']);
+// ── Job step definitions (per kind) ──────────────────────────────────────────
+// Each step: { id: DB stage name, label: display label, subtitle: hint text, subText: fn(progress) → string }
+const JOB_KIND_STEPS = {
+  ingest: [
+    { id: 'fetching',    label: 'Fetch',      subtitle: '',                 subText: ()  => '' },
+    { id: 'chunking',    label: 'Chunk',       subtitle: '',                 subText: p   => p?.chunks_total ? `${p.chunks_total} chunks` : '' },
+    { id: 'embedding',   label: 'Embed',       subtitle: '',                 subText: p   => p?.chunks_total ? `${p.chunks_done ?? 0} / ${p.chunks_total}` : '' },
+    { id: 'sectioning',  label: 'Section',     subtitle: '',                 subText: p   => p?.sections_done ? `${p.sections_done} sections` : '' },
+    { id: 'summarising', label: 'Summarise',   subtitle: '',                 subText: p   => p?.summary_steps_total ? `${p.summary_steps_done ?? 0} / ${p.summary_steps_total}` : p?.chunks_done ? `${p.chunks_done} chunks` : '' },
+    { id: 'extracting',  label: 'Extract',     subtitle: '',                 subText: ()  => '' },
+  ],
+  finetune: [
+    { id: 'extracting',  label: 'Link',        subtitle: 'LLM relations',    subText: p   => p?.total ? `${p.linking_done ?? 0} / ${p.total}` : '' },
+    { id: 'summarising', label: 'Tag',         subtitle: 'enrich metadata',  subText: p   => p?.total ? `${p.tagging_done ?? 0} / ${p.total}` : '' },
+  ],
+  retune: [
+    { id: 'embedding',    label: 'Re-embed',   subtitle: 'stale vectors',    subText: p   => p?.re_embedded != null ? `${p.re_embedded} chunks` : '' },
+    { id: 're_weighting', label: 'Re-weight',  subtitle: 'relation scores',  subText: p   => p?.reweighted  != null ? `${p.reweighted} rels`   : '' },
+    { id: 'pruning',      label: 'Prune',      subtitle: 'stale relations',  subText: p   => p?.pruned      != null ? `${p.pruned} removed`    : '' },
+    { id: 'summarising',  label: 'Summarise',  subtitle: 'entity summaries', subText: ()  => '' },
+    { id: 'indexing',     label: 'Index',      subtitle: 'vector index',     subText: ()  => '' },
+    { id: 'cleaning',     label: 'Clean',      subtitle: 'expire jobs',      subText: ()  => '' },
+  ],
+};
+JOB_KIND_STEPS.reingest = JOB_KIND_STEPS.ingest;
+
+function stepsFor(kind) {
+  return JOB_KIND_STEPS[kind] ?? JOB_KIND_STEPS.ingest;
+}
 const ARCHIVE_DELAY_MS = 30_000;
 const ARCHIVE_LS_KEY   = 'vkb_archived_jobs';
 
-const jobs         = new Map(); // Map<jobId, { label, stage, error, entityId, priorStage }>
+const jobs         = new Map(); // Map<jobId, { label, stage, kind, error, entityId, priorStage }>
 const archiveTimers = new Map(); // Map<jobId, timeoutId>
 
 let activeTab         = 'url';
@@ -36,7 +62,7 @@ function archiveJob(jobId) {
   archiveTimers.delete(jobId);
   const archived = loadArchive();
   if (!archived.find(a => a.id === jobId)) {
-    archived.unshift({ id: jobId, label: job.label, stage: job.stage, error: job.error ?? null, archivedAt: Date.now() });
+    archived.unshift({ id: jobId, label: job.label, stage: job.stage, kind: job.kind, error: job.error ?? null, archivedAt: Date.now() });
     if (archived.length > 200) archived.splice(200);
     saveArchive(archived);
   }
@@ -77,7 +103,7 @@ async function hydrateLiveJobs() {
         // Active or recently-settled: show in pipeline, auto-archive after delay
         const label  = jobLabelFromRecord(j);
         const errMsg = j.stage === 'error' ? (j.progress?.error_detail ?? null) : null;
-        registerJob(j.id, j.entity_id, label, /* skipPoll */ true);
+        registerJob(j.id, j.entity_id, label, j.kind ?? 'ingest', true);
         if (j.stage !== 'queued') updateJobStage(j.id, j.stage, errMsg);
         updateStageProgress(j.id, j.stage, j.progress);
         if (isSettled) scheduleArchive(j.id);
@@ -94,6 +120,7 @@ async function hydrateLiveJobs() {
           label:      jobLabelFromRecord(j),
           stage:      j.stage,
           error:      j.stage === 'error' ? (j.progress?.error_detail ?? null) : null,
+          kind:       j.kind ?? 'ingest',
           archivedAt: Date.now(),
         });
       }
@@ -113,7 +140,7 @@ async function ensureJobRegistered(jobId) {
     if (!j) return;
     const archived = loadArchive();
     if (archived.find(a => a.id === j.id)) return;
-    registerJob(j.id, j.entity_id, jobLabelFromRecord(j), true);
+    registerJob(j.id, j.entity_id, jobLabelFromRecord(j), j.kind ?? 'ingest', true);
   } catch {}
 }
 
@@ -264,8 +291,9 @@ function updateSubmitState() {
 
 // ── Pipeline UI ───────────────────────────────────────────────────────────────
 
-function createJobCard(jobId, label) {
+function createJobCard(jobId, label, kind = 'ingest') {
   const { escHtml } = window.__vkb;
+  const steps = stepsFor(kind);
   const el = document.createElement('div');
   el.className = 'job-card';
   el.id = `job-${jobId}`;
@@ -275,11 +303,12 @@ function createJobCard(jobId, label) {
       <div class="job-status status-pending" id="jstatus-${jobId}">queued</div>
     </div>
     <div class="stage-rail" id="srail-${jobId}">
-      ${STAGES.filter(s => s !== 'queued').map(s => `
-        <div class="stage-node sn-pending" id="sn-${jobId}-${s}">
+      ${steps.map(step => `
+        <div class="stage-node sn-pending" id="sn-${jobId}-${step.id}">
           <div class="stage-dot"></div>
-          <div class="stage-label">${s}</div>
-          <div class="stage-sub" id="ssub-${jobId}-${s}"></div>
+          <div class="stage-label">${step.label}</div>
+          ${step.subtitle ? `<div class="stage-subtitle">${step.subtitle}</div>` : ''}
+          <div class="stage-sub" id="ssub-${jobId}-${step.id}"></div>
         </div>
       `).join('')}
     </div>
@@ -300,29 +329,27 @@ function updateJobStage(jobId, stage, errorMsg) {
   if (!statusEl) return;
   const isDone  = stage === 'done';
   const isError = stage === 'error';
-  const isActive = ACTIVE_STAGES.has(stage);
+  const steps   = stepsFor(job.kind);
+  const curIdx  = steps.findIndex(s => s.id === stage);
+  const isActive = curIdx >= 0;
   statusEl.className   = `job-status ${isDone ? 'status-done' : isError ? 'status-error' : isActive ? 'status-active' : 'status-pending'}`;
   statusEl.textContent = stage;
-  const stagesForBar = STAGES.filter(s => s !== 'queued');
-  const curIdx = stagesForBar.indexOf(stage);
   const pct = isDone ? 100
-    : isError ? (curIdx >= 0 ? Math.round(curIdx / stagesForBar.length * 100) : 0)
-    : (curIdx >= 0 ? Math.round((curIdx + 0.5) / stagesForBar.length * 100) : 0);
+    : isError ? (curIdx >= 0 ? Math.round(curIdx / steps.length * 100) : 0)
+    : (curIdx >= 0 ? Math.round((curIdx + 0.5) / steps.length * 100) : 0);
   pbarEl.style.width = pct + '%';
   pbarEl.className = `job-progress-bar ${isDone ? '' : isError ? 'pb-error' : 'pb-active'}`;
-  STAGES.filter(s => s !== 'queued').forEach(s => {
-    const node = document.getElementById(`sn-${jobId}-${s}`);
+  const priorIdx    = steps.findIndex(s => s.id === (job.priorStage ?? ''));
+  const resolvedCur = isError ? (curIdx >= 0 ? curIdx : priorIdx) : curIdx;
+  steps.forEach((step, sIdx) => {
+    const node = document.getElementById(`sn-${jobId}-${step.id}`);
     if (!node) return;
-    const sIdx = STAGE_IDX[s];
-    const cur  = isError
-      ? (STAGE_IDX[stage] ?? STAGE_IDX[job.priorStage ?? 'queued'])
-      : STAGE_IDX[stage];
     node.className = 'stage-node ' + (
-      isDone                               ? 'sn-done'   :
-      isError && s === 'error'             ? 'sn-error'  :
-      isError && sIdx < cur                ? 'sn-done'   :
-      !isError && sIdx < STAGE_IDX[stage]  ? 'sn-done'   :
-      !isError && s === stage              ? 'sn-active'  : 'sn-pending'
+      isDone                          ? 'sn-done'  :
+      isError && sIdx < resolvedCur   ? 'sn-done'  :
+      isError && sIdx === resolvedCur ? 'sn-error' :
+      !isError && sIdx < curIdx       ? 'sn-done'  :
+      !isError && step.id === stage   ? 'sn-active' : 'sn-pending'
     );
   });
   const existingErr = document.getElementById(`jerr-${jobId}`);
@@ -337,9 +364,10 @@ function updateJobStage(jobId, stage, errorMsg) {
   } else if (existingErr) {
     existingErr.remove();
   }
-  // Clear sub-labels for stages we're not currently in
-  STAGES.filter(s => s !== 'queued' && s !== stage).forEach(s => {
-    const subEl = document.getElementById(`ssub-${jobId}-${s}`);
+  // Clear sub-labels for steps we're not currently in
+  steps.forEach(step => {
+    if (step.id === stage) return;
+    const subEl = document.getElementById(`ssub-${jobId}-${step.id}`);
     if (subEl) subEl.textContent = '';
   });
   if (!isError) job.priorStage = stage;
@@ -348,46 +376,29 @@ function updateJobStage(jobId, stage, errorMsg) {
 }
 
 function updateStageProgress(jobId, stage, progress) {
+  const job = jobs.get(jobId);
+  if (!job) return;
+  const step  = stepsFor(job.kind).find(s => s.id === stage);
+  if (!step) return;
   const subEl = document.getElementById(`ssub-${jobId}-${stage}`);
-  if (!subEl) return;
-  switch (stage) {
-    case 'chunking': {
-      const total = progress?.chunks_total;
-      if (total) subEl.textContent = `${total} chunks`;
-      break;
-    }
-    case 'embedding': {
-      const done  = progress?.chunks_done;
-      const total = progress?.chunks_total;
-      if (total) subEl.textContent = `${done ?? 0} / ${total}`;
-      break;
-    }
-    case 'sectioning': {
-      const done = progress?.sections_done;
-      if (done) subEl.textContent = `${done} sections`;
-      break;
-    }
-    case 'summarising': {
-      const total      = progress?.summary_steps_total;
-      const done       = progress?.summary_steps_done;
-      const chunksDone = progress?.chunks_done;
-      if (total) {
-        subEl.textContent = `${done ?? 0} / ${total}`;
-      } else if (chunksDone) {
-        subEl.textContent = `${chunksDone} chunks`;
-      }
-      break;
-    }
-    default:
-      break;
+  if (subEl) subEl.textContent = step.subText(progress) ?? '';
+}
+
+function completionVerb(jobs) {
+  const kinds = new Set(jobs.map(j => j.kind));
+  if (kinds.size === 1) {
+    const k = [...kinds][0];
+    if (k === 'finetune') return { noun: 'fine-tune', pastNoun: 'fine-tuned', sub: 'Relations extracted and metadata tags enriched.' };
+    if (k === 'retune')   return { noun: 'retune',    pastNoun: 'retuned',    sub: 'Embeddings refreshed and relation weights updated.' };
   }
+  return { noun: 'ingestion', pastNoun: 'ingested', sub: 'All items processed and indexed. Explore the knowledge graph.' };
 }
 
 function checkCompletion() {
   if (jobs.size === 0) { updateJobCountLabel(); return; }
-  const all      = [...jobs.values()];
-  const settled  = all.filter(j => j.stage === 'done' || j.stage === 'error');
-  const errors   = all.filter(j => j.stage === 'error');
+  const all     = [...jobs.values()];
+  const settled = all.filter(j => j.stage === 'done' || j.stage === 'error');
+  const errors  = all.filter(j => j.stage === 'error');
   updateJobCountLabel();
   if (settled.length < all.length) return;
   const resultSection = document.getElementById('result-section');
@@ -396,17 +407,18 @@ function checkCompletion() {
   const resultSub     = document.getElementById('result-sub');
   resultSection.classList.add('visible');
   document.getElementById('pipeline-empty').style.display = 'none';
+  const { noun, pastNoun, sub } = completionVerb(all);
   if (errors.length === 0) {
     resultIcon.textContent = '✓'; resultIcon.style.color = 'var(--teal)';
-    resultTitle.textContent = all.length === 1 ? 'Ingestion complete' : `${all.length} items ingested`;
-    resultSub.textContent = 'All items processed and indexed. Explore the knowledge graph.';
+    resultTitle.textContent = all.length === 1 ? `${noun.charAt(0).toUpperCase() + noun.slice(1)} complete` : `${all.length} items ${pastNoun}`;
+    resultSub.textContent = sub;
   } else if (errors.length === all.length) {
     resultIcon.textContent = '✕'; resultIcon.style.color = 'var(--coral)';
-    resultTitle.textContent = 'Ingestion failed';
+    resultTitle.textContent = `${noun.charAt(0).toUpperCase() + noun.slice(1)} failed`;
     resultSub.textContent = `${errors.length} item${errors.length > 1 ? 's' : ''} encountered errors.`;
   } else {
     resultIcon.textContent = '⚠'; resultIcon.style.color = 'var(--amber)';
-    resultTitle.textContent = `${all.length - errors.length} of ${all.length} items ingested`;
+    resultTitle.textContent = `${all.length - errors.length} of ${all.length} items ${pastNoun}`;
     resultSub.textContent = `${errors.length} item${errors.length > 1 ? 's' : ''} failed. Successful items are available in the graph.`;
   }
 }
@@ -439,12 +451,12 @@ async function postIngest(payload) {
   return json.data;
 }
 
-function registerJob(jobId, entityId, label, skipPoll = false) {
+function registerJob(jobId, entityId, label, kind = 'ingest', skipPoll = false) {
   const emptyEl = document.getElementById('pipeline-empty');
   if (emptyEl) emptyEl.style.display = 'none';
-  const card = createJobCard(jobId, label);
+  const card = createJobCard(jobId, label, kind);
   document.getElementById('pipeline-body')?.insertBefore(card, emptyEl);
-  jobs.set(jobId, { stage: 'queued', label, entityId, error: null, priorStage: null });
+  jobs.set(jobId, { stage: 'queued', label, entityId, kind, error: null, priorStage: null });
   updateJobCountLabel();
   if (!skipPoll) pollJob(jobId);
 }
@@ -712,7 +724,7 @@ async function repairOne(entityId) {
     const job = data.data.jobs?.[0];
     if (job) {
       const item = remItems.find(i => i.id === entityId);
-      registerJob(job.job_id, job.entity_id, item ? fmtRemLabel(item) : entityId.slice(0, 8));
+      registerJob(job.job_id, job.entity_id, item ? fmtRemLabel(item) : entityId.slice(0, 8), 'reingest');
       document.getElementById('pipeline-empty').style.display = 'none';
     }
     row?.remove();
@@ -827,13 +839,22 @@ function statusChip(st) {
   return `<span class="ent-chip st-${st}">${st}</span>`;
 }
 
-async function loadEntities(offset = 0) {
-  const search = document.getElementById('ent-search').value.trim();
+async function loadEntities(offset = 0, pinnedIdOverride = '') {
+  const searchEl   = document.getElementById('ent-search');
+  const search     = searchEl.value.trim();
+  // pinnedIdOverride is passed directly from the typeahead mousedown handler to
+  // avoid any race with the input event clearing dataset.selectedId.
+  const pinnedId   = pinnedIdOverride || (searchEl.dataset.selectedId ?? '');
   const type   = document.getElementById('ent-filter-type').value;
   const ctx    = document.getElementById('ent-filter-ctx').value;
   const status = document.getElementById('ent-filter-status').value;
   const params = new URLSearchParams({ limit: String(ENT_PAGE_SIZE), offset: String(offset) });
-  if (search) params.set('q', search);
+  // If the user picked from the typeahead, search by exact ID to avoid FTS/ILIKE mismatches.
+  if (pinnedId) {
+    params.set('id', pinnedId);
+  } else if (search) {
+    params.set('q', search);
+  }
   if (type)   params.set('type', type);
   if (ctx)    params.set('source_context', ctx);
   if (status) params.set('status', status);
@@ -888,7 +909,7 @@ function renderEntTable(entities) {
   tbl.innerHTML = `
     <thead><tr>
       <th style="width:28px"><input type="checkbox" id="ent-select-all" class="ent-cb" title="Select all on this page"></th>
-      <th>Source</th><th>Type</th><th>Context</th><th>Status</th>
+      <th>Title</th><th>Source</th><th>Type</th><th>Context</th><th>Status</th>
       <th>Chunks</th><th>Sections</th><th>Summary</th><th>Created</th><th>Action</th>
     </tr></thead>
     <tbody id="ent-tbody"></tbody>`;
@@ -911,12 +932,22 @@ function renderEntTable(entities) {
     const tr = document.createElement('tr');
     tr.id = `ent-row-${e.id}`;
     if (selectedEntIds.has(e.id)) tr.classList.add('ent-selected');
-    const label   = escHtml(entLabel(e));
+    const meta    = e.meta ?? {};
+    const title   = escHtml(meta.title || meta.filename || '');
+    const ref     = escHtml(e.ref ?? '');
     const created = e.created_at ? new Date(e.created_at).toLocaleDateString() : '—';
     const summary = escHtml(e.summary ?? '—');
+    // Tag chips from meta.tag / meta.tags
+    const rawTags = [].concat(meta.tag ?? [], meta.tags ?? []).filter(t => t && String(t).trim());
+    const tagChips = rawTags.map(t => `<span class="ent-tag-chip">${escHtml(String(t))}</span>`).join('');
+    const tagsHtml = tagChips ? `<div class="ent-tag-row">${tagChips}</div>` : '';
     tr.innerHTML = `
       <td><input type="checkbox" class="ent-row-cb ent-cb" data-id="${e.id}" ${selectedEntIds.has(e.id) ? 'checked' : ''}></td>
-      <td><div class="ent-ref" title="${label}">${label}</div></td>
+      <td>
+        <div class="ent-title">${title || '<span style="color:var(--hint)">—</span>'}</div>
+        ${tagsHtml}
+      </td>
+      <td><div class="ent-ref" title="${ref}">${ref || '<span style="color:var(--hint)">—</span>'}</div></td>
       <td><span class="ent-chip">${escHtml(e.type)}</span></td>
       <td>${ctxChip(e.source_context ?? 'external')}</td>
       <td>${statusChip(e.status)}</td>
@@ -980,7 +1011,7 @@ async function entReingestOne(entityId, btn) {
     if (!data.ok) throw new Error(data.error);
     const job = data.data.jobs?.[0];
     if (job) {
-      registerJob(job.job_id, job.entity_id, label);
+      registerJob(job.job_id, job.entity_id, label, 'reingest');
       document.getElementById('pipeline-empty').style.display = 'none';
     }
     btn.textContent = 'Queued ✓';
@@ -1066,14 +1097,30 @@ async function entBulkAction(action) {
       updateEntBadge(entTotal);
       updateEntPagination();
     } else {
-      // Queue jobs for succeeded items
+      // Queue jobs for succeeded items.
+      // Deduplicate by job_id: finetune uses a single job for all selected entities, so
+      // all results share the same job_id. Registering it N times creates N orphaned DOM
+      // cards with the same id and only one tracking entry — others never update.
+      const jobKind = action === 'finetune' ? 'finetune' : 'reingest';
+
+      // Count how many entities map to each job_id
+      const jobEntityCount = new Map(); // job_id → count
       for (const r of results) {
-        if (r.ok && r.job_id) {
-          const row   = document.getElementById(`ent-row-${r.id}`);
-          const label = row?.querySelector('.ent-ref')?.textContent ?? r.id.slice(0, 8);
-          registerJob(r.job_id, r.id, label);
-          document.getElementById('pipeline-empty').style.display = 'none';
-        }
+        if (r.ok && r.job_id) jobEntityCount.set(r.job_id, (jobEntityCount.get(r.job_id) ?? 0) + 1);
+      }
+
+      const registeredJobIds = new Set();
+      for (const r of results) {
+        if (!r.ok || !r.job_id || registeredJobIds.has(r.job_id)) continue;
+        registeredJobIds.add(r.job_id);
+        const count = jobEntityCount.get(r.job_id) ?? 1;
+        const row   = document.getElementById(`ent-row-${r.id}`);
+        const singleLabel = row?.querySelector('.ent-ref')?.textContent ?? r.id.slice(0, 8);
+        const label = count > 1
+          ? `${jobKind === 'finetune' ? 'Finetune' : 'Reingest'} (${count} entities)`
+          : singleLabel;
+        registerJob(r.job_id, r.id, label, jobKind);
+        document.getElementById('pipeline-empty').style.display = 'none';
       }
     }
 
@@ -1112,6 +1159,119 @@ async function populateEntTypeFilter() {
   } catch {}
 }
 
+// ── Entity panel lookahead search ────────────────────────────────────────────
+
+function initEntSearchTypeahead() {
+  const input = document.getElementById('ent-search');
+  const list  = document.getElementById('ent-search-list');
+  if (!input || !list) return;
+
+  const { escHtml } = window.__vkb;
+  let debounceTimer = null;
+  let curIdx        = -1;
+  // ID of the entity the user explicitly selected from the dropdown.
+  // Set on mousedown selection, cleared whenever the user edits the text manually.
+  // loadEntities reads this to fetch by ID instead of by text search.
+  input.dataset.selectedId = '';
+
+  function entLabel2(e) {
+    const m = e.meta ?? {};
+    return m.title || m.filename || e.ref || e.id.slice(0, 8);
+  }
+
+  function entTags(e) {
+    const m = e.meta ?? {};
+    return [].concat(m.tag ?? [], m.tags ?? []).filter(t => t && String(t).trim());
+  }
+
+  function closeList() {
+    list.classList.remove('open');
+    input.setAttribute('aria-expanded', 'false');
+    curIdx = -1;
+  }
+
+  function openList(entities) {
+    list.innerHTML = '';
+    if (!entities.length) {
+      list.innerHTML = '<div class="search-no-results">No matches</div>';
+      list.classList.add('open');
+      input.setAttribute('aria-expanded', 'true');
+      return;
+    }
+    entities.forEach(e => {
+      const div = document.createElement('div');
+      div.className = 'search-opt';
+      div.setAttribute('role', 'option');
+      div.setAttribute('aria-selected', 'false');
+      const tags = entTags(e);
+      const tagHtml = tags.length
+        ? '<div class="search-opt-tags">' + tags.map(t => `<span class="search-opt-tag">${escHtml(String(t))}</span>`).join('') + '</div>'
+        : '';
+      div.innerHTML =
+        `<div class="search-opt-title">${escHtml(entLabel2(e))}</div>` +
+        `<div class="search-opt-sub">${escHtml(e.type)}${e.summary ? ' · ' + escHtml(e.summary.slice(0, 80)) : ''}</div>` +
+        tagHtml;
+      div.addEventListener('mousedown', ev => {
+        ev.preventDefault();
+        const entityId = e.id;             // capture in closure before any async events
+        input.dataset.selectedId = entityId;
+        input.value = entLabel2(e);
+        closeList();
+        loadEntities(0, entityId);         // pass ID directly, bypasses dataset race
+      });
+      list.appendChild(div);
+    });
+    list.classList.add('open');
+    input.setAttribute('aria-expanded', 'true');
+    curIdx = -1;
+  }
+
+  function highlightItem(idx) {
+    const opts = list.querySelectorAll('.search-opt');
+    opts.forEach((el, i) => el.setAttribute('aria-selected', String(i === idx)));
+    curIdx = idx;
+  }
+
+  input.addEventListener('input', () => {
+    input.dataset.selectedId = '';  // user is typing freely — clear pinned entity
+    clearTimeout(debounceTimer);
+    const q = input.value.trim();
+    if (!q) { closeList(); return; }
+    debounceTimer = setTimeout(async () => {
+      try {
+        const params = new URLSearchParams({ q, limit: '10' });
+        const res  = await fetch(`/entities?${params}`);
+        const data = await res.json();
+        if (!data.ok) return;
+        openList(data.data.entities);
+      } catch { /* ignore */ }
+    }, 200);
+  });
+
+  input.addEventListener('keydown', e => {
+    const opts = list.querySelectorAll('.search-opt');
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      highlightItem(Math.min(curIdx + 1, opts.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      highlightItem(Math.max(curIdx - 1, 0));
+    } else if (e.key === 'Enter') {
+      if (curIdx >= 0 && opts[curIdx]) {
+        e.preventDefault();
+        opts[curIdx].dispatchEvent(new MouseEvent('mousedown'));
+      }
+      // let Enter fall through to the existing keydown handler which triggers loadEntities
+    } else if (e.key === 'Escape') {
+      closeList();
+    }
+  });
+
+  document.addEventListener('click', e => {
+    if (!input.contains(e.target) && !list.contains(e.target)) closeList();
+  });
+}
+
 function initEntitiesPanel() {
   const header  = document.getElementById('ent-card-header');
   const body    = document.getElementById('ent-body');
@@ -1136,6 +1296,7 @@ function initEntitiesPanel() {
     populateEntTypeFilter();
     loadEntities(0);
   });
+  initEntSearchTypeahead();
   document.getElementById('ent-search').addEventListener('keydown', e => {
     if (e.key === 'Enter') loadEntities(0);
   });

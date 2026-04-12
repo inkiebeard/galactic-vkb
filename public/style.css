@@ -428,6 +428,9 @@
   .sn-done   .stage-label { color: var(--teal); }
   .sn-active .stage-label { color: var(--amber); }
   .sn-error  .stage-label { color: var(--coral); }
+  .stage-subtitle { font-size: 7px; color: var(--muted); text-align: center; letter-spacing: 0.02em; white-space: nowrap; opacity: 0.7; }
+  .sn-active .stage-subtitle { color: var(--amber); opacity: 0.8; }
+  .sn-done   .stage-subtitle { color: var(--teal); opacity: 0.6; }
   .stage-sub { font-size: 8px; color: var(--amber); text-align: center; letter-spacing: 0.02em; white-space: nowrap; min-height: 10px; }
   .job-progress-bar-wrap { margin-top: 8px; height: 3px; background: var(--line); border-radius: 2px; overflow: hidden; }
   .job-progress-bar { height: 100%; border-radius: 2px; background: var(--teal-dim); transition: width 0.4s ease; }
@@ -570,6 +573,58 @@
     padding: 5px 9px; outline: none;
   }
   #ent-search:focus { border-color: var(--teal-dim); }
+
+  /* ── Lookahead search dropdowns (shared) ──────────────────────────────────── */
+  .ent-search-wrap, .viz-search-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+  .ent-search-wrap { flex: 1; min-width: 160px; }
+  .ent-search-wrap #ent-search { width: 100%; min-width: 0; flex: none; }
+  .viz-search-wrap { width: 180px; }
+  .viz-search-wrap input {
+    width: 100%; background: var(--bg);
+    border: 0.5px solid var(--line2); border-radius: 4px;
+    color: var(--ink); font-family: var(--mono); font-size: 11px;
+    padding: 5px 9px; outline: none;
+    transition: border-color 0.15s, width 0.2s;
+  }
+  .viz-search-wrap input:focus { border-color: var(--teal-dim); width: 240px; }
+  .ent-search-list, .viz-search-list {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    min-width: 260px;
+    max-width: min(500px, 90vw);
+    max-height: 320px;
+    overflow-y: auto;
+    background: var(--card);
+    border: 0.5px solid var(--line2);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    z-index: 200;
+    display: none;
+  }
+  .viz-search-list { min-width: 280px; right: 0; left: auto; }
+  .ent-search-list.open, .viz-search-list.open { display: block; }
+  .search-opt {
+    display: flex; flex-direction: column; gap: 2px;
+    padding: 8px 12px; cursor: pointer;
+    border-bottom: 0.5px solid var(--line);
+    transition: background 0.1s;
+  }
+  .search-opt:last-child { border-bottom: none; }
+  .search-opt:hover, .search-opt[aria-selected="true"] { background: rgba(255,255,255,0.05); }
+  .search-opt-title { font-size: 11px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .search-opt-sub   { font-size: 9px; color: var(--hint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .search-opt-tags  { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 2px; }
+  .search-opt-tag   { font-size: 8px; padding: 1px 5px; border-radius: 8px; background: #162a1e; color: var(--teal); border: 0.5px solid var(--teal-dim); }
+  .search-no-results { padding: 10px 12px; font-size: 11px; color: var(--hint); }
+  @media (max-width: 768px) {
+    .viz-search-wrap { width: 120px; }
+    .viz-search-wrap input:focus { width: 160px; }
+  }
   .ent-toolbar select {
     background: var(--bg); border: 0.5px solid var(--line2); border-radius: 4px;
     color: var(--muted); font-family: var(--mono); font-size: 10px;
@@ -592,7 +647,14 @@
   .ent-table td { padding: 9px 12px; border-bottom: 0.5px solid var(--line); color: var(--muted); vertical-align: middle; }
   .ent-table tr:last-child td { border-bottom: none; }
   .ent-table tr:hover td { background: rgba(255,255,255,0.02); }
-  .ent-ref     { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-size: 10px; }
+  .ent-ref     { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 10px; }
+  .ent-title   { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-size: 11px; font-weight: 500; }
+  .ent-tag-row { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 4px; }
+  .ent-tag-chip {
+    display: inline-block; padding: 1px 6px; border-radius: 8px;
+    font-size: 8px; white-space: nowrap;
+    background: #162a1e; color: var(--teal); border: 0.5px solid var(--teal-dim);
+  }
   .ent-summary { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 10px; }
   .ent-chip {
     display: inline-block; padding: 1px 6px; border-radius: 3px;
