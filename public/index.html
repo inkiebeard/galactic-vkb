@@ -53,6 +53,10 @@
       <button class="res-btn" data-res="entity">Entity</button>
       <button class="res-btn active" data-res="chunk">Chunk</button>
     </div>
+    <div class="viz-search-wrap" id="viz-search-wrap">
+      <input type="search" id="viz-search" placeholder="Find node…" autocomplete="off" spellcheck="false" aria-label="Search graph nodes" aria-autocomplete="list" aria-controls="viz-search-list" aria-expanded="false">
+      <div id="viz-search-list" class="viz-search-list" role="listbox" aria-label="Node matches"></div>
+    </div>
     <div class="stat" id="ws-status">connecting…</div>
     <button id="sidebar-toggle" class="sidebar-toggle" title="Toggle details">⊞</button>
   </div>
@@ -79,9 +83,10 @@
       <div class="panel-label">Relation confidence distribution</div>
       <svg id="histogram"></svg>
       <div class="legend">
-        <div class="leg-item"><div class="leg-dot" style="background:#9fe1cb"></div>content</div>
-        <div class="leg-item"><div class="leg-dot" style="background:#cecbf6"></div>semantic</div>
-        <div class="leg-item"><div class="leg-dot" style="background:#f5c4b3"></div>asserted</div>
+        <div class="leg-item"><div class="leg-dot" style="background:#3ecba0"></div>content</div>
+        <div class="leg-item"><div class="leg-dot" style="background:#7b6de0"></div>semantic</div>
+        <div class="leg-item"><div class="leg-dot" style="background:#d95f3b"></div>asserted</div>
+        <div class="leg-item"><div class="leg-dot" style="background:#3a6a8a"></div>same doc</div>
       </div>
     </div>
     <div class="panel">
@@ -108,7 +113,10 @@
       </div>
       <div id="ent-body" class="open">
         <div class="ent-toolbar">
-          <input type="search" id="ent-search" placeholder="Search summaries…" autocomplete="off" spellcheck="false">
+          <div class="ent-search-wrap">
+            <input type="search" id="ent-search" placeholder="Search summaries…" autocomplete="off" spellcheck="false" aria-label="Search entities" aria-autocomplete="list" aria-controls="ent-search-list" aria-expanded="false">
+            <div id="ent-search-list" class="ent-search-list" role="listbox" aria-label="Entity matches"></div>
+          </div>
           <select id="ent-filter-type" title="Filter by type">
             <option value="">All types</option>
           </select>

@@ -6,7 +6,19 @@ let nodes        = [];
 let links        = [];
 let allRelations = [];
 let resolution   = 'chunk';   // 'entity' | 'chunk'
-let _refreshPending = false;   // debounce WS-triggered refreshes
+
+// ── Pagination / version tracking ────────────────────────────────────────────
+const PROJ_PAGE_SIZE = 1000;                    // nodes per projection page
+let projVersion  = { chunk: -1, entity: -1 }; // last known server version per resolution
+let _loadId      = 0;                          // increment to cancel stale in-flight loads
+let _refreshTimer = null;                      // debounce timer handle
+
+// ── Selection state ──────────────────────────────────────────────────────────
+let _selectedNode  = null;   // currently selected/highlighted node
+let _selEdgeLine   = null;   // solid edge LineSegments for selected node's relations
+let _selEdgeDots   = null;   // animated directional InstancedMesh dots
+let _selEdgeLinks  = [];     // links connected to the selected node
+let _selDotPhases  = [];     // per-edge dot phase offsets [0,1)
 
 // ── Three.js bootstrap ────────────────────────────────────────────────────────
 const canvas  = document.getElementById('graph');
@@ -97,6 +109,7 @@ renderer.setAnimationLoop((t) => {
   tickOrbit(t);
   controls.update();
   tickStarscape(t);
+  tickSelectionAnim(t);
   renderer.render(scene, camera);
 });
 
@@ -202,6 +215,7 @@ function typeColor(type) {
 const NODE_GEO  = new THREE.SphereGeometry(6, 16, 12);
 const CHUNK_GEO = new THREE.SphereGeometry(3, 10, 8);
 const NODE_MAT  = new THREE.MeshLambertMaterial();
+const DOT_GEO   = new THREE.SphereGeometry(0.4, 6, 4);  // directional flow indicator (1/5 scale)
 let nodeMesh = null;
 let edgeLine = null;
 
@@ -212,15 +226,18 @@ const STATUS_COLORS = {
   pending:    new THREE.Color(0x444441),
 };
 const EDGE_COLORS = {
-  content_heuristic: new THREE.Color(0x085041),
-  content_llm:       new THREE.Color(0x085041),
-  semantic:          new THREE.Color(0x3C3489),
-  asserted:          new THREE.Color(0x712B13),
+  content_heuristic: new THREE.Color(0x0e7a60),
+  content_llm:       new THREE.Color(0x0e7a60),
+  semantic:          new THREE.Color(0x7b6de0),
+  asserted:          new THREE.Color(0xd95f3b),
+  same_entity:       new THREE.Color(0x3a6a8a),
 };
-const _mat = new THREE.Matrix4();
+const _mat    = new THREE.Matrix4();
+const _dotMat = new THREE.Matrix4();  // separate matrix for animated dot placement
 
 // ── Scene builder ─────────────────────────────────────────────────────────────
 function buildScene() {
+  clearSelectionOverlay();
   if (nodeMesh) { scene.remove(nodeMesh); nodeMesh = null; }
   if (edgeLine) { scene.remove(edgeLine); edgeLine.geometry.dispose(); edgeLine.material.dispose(); edgeLine = null; }
   if (!nodes.length) return;
@@ -254,7 +271,8 @@ function buildScene() {
   eGeo.setAttribute('color',    new THREE.BufferAttribute(eCol, 3));
   edgeLine = new THREE.LineSegments(
     eGeo,
-    new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.55 }),
+    // Ghost opacity — selected node's relations are drawn solid in the overlay layer
+    new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.1 }),
   );
   scene.add(edgeLine);
 
@@ -266,6 +284,130 @@ function buildScene() {
     // Reset orbit angle so it smoothly continues from the new center
     orbit._baseAngle = null;
   }
+
+  // Restore selection overlay on scene rebuild (e.g. after pagination or UMAP refresh)
+  if (_selectedNode) buildSelectionOverlay(_selectedNode);
+  updateNodeDim();
+}
+
+// ── Selection overlay ────────────────────────────────────────────────────────
+// When the user clicks a node, its relations are highlighted with solid colored
+// lines and animated dots that travel src→tgt to show directionality.
+
+function clearSelectionOverlay() {
+  if (_selEdgeLine) {
+    scene.remove(_selEdgeLine);
+    _selEdgeLine.geometry.dispose();
+    _selEdgeLine.material.dispose();
+    _selEdgeLine = null;
+  }
+  if (_selEdgeDots) {
+    scene.remove(_selEdgeDots);
+    _selEdgeDots.geometry.dispose();
+    _selEdgeDots.material.dispose();
+    _selEdgeDots = null;
+  }
+  _selEdgeLinks = [];
+  _selDotPhases = [];
+}
+
+function buildSelectionOverlay(node) {
+  clearSelectionOverlay();
+  // Exclude synthetic same_entity links — they're grouping hints, not real relations
+  _selEdgeLinks = links.filter(l =>
+    (l._src?.id === node.id || l._tgt?.id === node.id) && l.origin !== 'same_entity',
+  );
+  if (!_selEdgeLinks.length) return;
+
+  // Solid highlighted edge lines for this node's relations
+  const ePos = new Float32Array(_selEdgeLinks.length * 6);
+  const eCol = new Float32Array(_selEdgeLinks.length * 6);
+  _selEdgeLinks.forEach((l, i) => {
+    const b = i * 6;
+    ePos[b]   = l._src.x; ePos[b+1] = l._src.y; ePos[b+2] = l._src.z;
+    ePos[b+3] = l._tgt.x; ePos[b+4] = l._tgt.y; ePos[b+5] = l._tgt.z;
+    const c = EDGE_COLORS[l.origin] ?? EDGE_COLORS.content_heuristic;
+    eCol[b]   = c.r; eCol[b+1] = c.g; eCol[b+2] = c.b;
+    eCol[b+3] = c.r; eCol[b+4] = c.g; eCol[b+5] = c.b;
+  });
+  const eGeo = new THREE.BufferGeometry();
+  eGeo.setAttribute('position', new THREE.BufferAttribute(ePos, 3));
+  eGeo.setAttribute('color',    new THREE.BufferAttribute(eCol, 3));
+  _selEdgeLine = new THREE.LineSegments(eGeo, new THREE.LineBasicMaterial({ vertexColors: true }));
+  scene.add(_selEdgeLine);
+
+  // One animated dot per relation that travels _src → _tgt to indicate direction
+  _selDotPhases = _selEdgeLinks.map((_, i) => i / _selEdgeLinks.length); // stagger start phases
+  _selEdgeDots  = new THREE.InstancedMesh(DOT_GEO, new THREE.MeshBasicMaterial(), _selEdgeLinks.length);
+  _selEdgeLinks.forEach((l, i) => {
+    const ph = _selDotPhases[i];
+    _dotMat.setPosition(
+      l._src.x + (l._tgt.x - l._src.x) * ph,
+      l._src.y + (l._tgt.y - l._src.y) * ph,
+      l._src.z + (l._tgt.z - l._src.z) * ph,
+    );
+    _selEdgeDots.setMatrixAt(i, _dotMat);
+    _selEdgeDots.setColorAt(i, EDGE_COLORS[l.origin] ?? EDGE_COLORS.content_heuristic);
+  });
+  _selEdgeDots.instanceMatrix.needsUpdate = true;
+  _selEdgeDots.instanceColor.needsUpdate  = true;
+  scene.add(_selEdgeDots);
+}
+
+// Advance each dot along its edge; called every frame from the render loop.
+function tickSelectionAnim(t) {
+  if (!_selEdgeDots || !_selEdgeLinks.length) return;
+  const speed = 0.00025; // ~4 s per full src→tgt traversal
+  for (let i = 0; i < _selEdgeLinks.length; i++) {
+    const phase = (_selDotPhases[i] + t * speed) % 1;
+    const l = _selEdgeLinks[i];
+    _dotMat.setPosition(
+      l._src.x + (l._tgt.x - l._src.x) * phase,
+      l._src.y + (l._tgt.y - l._src.y) * phase,
+      l._src.z + (l._tgt.z - l._src.z) * phase,
+    );
+    _selEdgeDots.setMatrixAt(i, _dotMat);
+  }
+  _selEdgeDots.instanceMatrix.needsUpdate = true;
+}
+
+// ── Node dimming ─────────────────────────────────────────────────────────────
+// BFS up to `hops` edges from `node`, following all links bidirectionally.
+// Returns a Set of node IDs in the neighbourhood (including the start node).
+function getNeighborhood(node, hops) {
+  const visited = new Set([node.id]);
+  let frontier  = new Set([node.id]);
+  for (let h = 0; h < hops; h++) {
+    if (!frontier.size) break;
+    const next = new Set();
+    for (const l of links) {
+      const s = l._src?.id, t = l._tgt?.id;
+      if (!s || !t) continue;
+      if (frontier.has(s) && !visited.has(t)) { visited.add(t); next.add(t); }
+      if (frontier.has(t) && !visited.has(s)) { visited.add(s); next.add(s); }
+    }
+    frontier = next;
+  }
+  return visited;
+}
+
+// Apply per-instance brightness to the node mesh.
+// • No selection  → all nodes at 55% (slightly dimmed / "transparent")
+// • Selection     → 3-hop neighbours at full brightness, rest at 10%
+const _dimColor = new THREE.Color();
+function updateNodeDim() {
+  if (!nodeMesh) return;
+  const nbhd = _selectedNode ? getNeighborhood(_selectedNode, 3) : null;
+  nodes.forEach((n, i) => {
+    _dimColor.copy(n._color ?? STATUS_COLORS[n.status] ?? STATUS_COLORS.pending);
+    if (nbhd) {
+      if (!nbhd.has(n.id)) _dimColor.multiplyScalar(0.10);
+    } else {
+      _dimColor.multiplyScalar(0.55);
+    }
+    nodeMesh.setColorAt(i, _dimColor);
+  });
+  nodeMesh.instanceColor.needsUpdate = true;
 }
 
 // ── Picking & interaction ─────────────────────────────────────────────────────
@@ -318,11 +460,19 @@ function openSidebar() {
 function showDetail(n) {
   const { escHtml } = window.__vkb;
   const rels = links.filter(l => (l._src?.id === n.id) || (l._tgt?.id === n.id));
-  const relBadges = rels.map(r =>
-    '<span class="badge b-' +
-    (r.origin?.includes('content') ? 'content' : r.origin === 'asserted' ? 'asserted' : 'semantic') +
-    '">' + escHtml(r.origin ?? '') + ' ' + (r.confidence != null ? r.confidence.toFixed(2) : '') + '</span>'
-  ).join('');
+  _selectedNode = n;
+  buildSelectionOverlay(n);
+  updateNodeDim();
+  const relBadges = rels
+    .filter(r => r.origin !== 'same_entity')  // omit synthetic intra-doc links from badge list
+    .map(r => {
+      const cls = r.origin?.includes('content') ? 'content'
+        : r.origin === 'semantic' ? 'semantic'
+        : r.origin === 'asserted' ? 'asserted'
+        : 'content';
+      return '<span class="badge b-' + cls + '">' + escHtml(r.origin ?? '') + ' ' +
+        (r.confidence != null ? r.confidence.toFixed(2) : '') + '</span>';
+    }).join('');
 
   const el = document.getElementById('detail');
 
@@ -417,19 +567,26 @@ function setLoading(on) {
 }
 
 // ── refreshChunks ────────────────────────────────────────────────────────────
+// Loads the chunk projection incrementally, one PROJ_PAGE_SIZE page at a time.
+// Each page is rendered immediately so nodes appear progressively. If a newer
+// load starts (e.g. from a projection_version event), stale in-flight loads
+// are cancelled via the _loadId token. The server version is compared before
+// fetching all pages — if unchanged, only the status bar is updated.
 async function refreshChunks() {
+  const loadId = ++_loadId;
   setLoading(true);
   try {
-    const [statusRes, projRes, relationsRes, jobsRes] = await Promise.all([
+    // Fetch status, jobs, and the first projection page simultaneously.
+    const [statusRes, firstPageRes, jobsRes] = await Promise.all([
       fetch('/status'),
-      fetch('/chunks/projection'),
-      fetch('/relations?source_kind=chunk&limit=5000'),
+      fetch(`/chunks/projection?offset=0&limit=${PROJ_PAGE_SIZE}`),
       fetch('/jobs?limit=30'),
     ]);
-    const status        = await statusRes.json();
-    const projData      = await projRes.json();
-    const relationsData = await relationsRes.json();
-    const jobs          = await jobsRes.json();
+    if (loadId !== _loadId) return; // superseded by a newer load
+
+    const [status, firstPage, jobs] = await Promise.all([
+      statusRes.json(), firstPageRes.json(), jobsRes.json(),
+    ]);
 
     document.getElementById('s-entities').textContent  = status.data?.entity_count   ?? '?';
     document.getElementById('s-chunks').textContent    = status.data?.chunk_count    ?? '?';
@@ -437,29 +594,62 @@ async function refreshChunks() {
     document.getElementById('s-queue').textContent     = status.data?.queue_depth    ?? '?';
     renderJobs(jobs.data?.jobs ?? []);
 
-    const points  = projData.data?.points ?? [];
-    const existPos = new Map(nodes.map(n => [n.id, n]));
+    if (!firstPage.ok) return;
+    const serverVersion = firstPage.data.version;
+    const total         = firstPage.data.total;
 
-    nodes = points.map(p => {
+    // Skip full projection reload if we already have this version and a complete node set.
+    if (serverVersion === projVersion.chunk && nodes.length === total) return;
+    projVersion.chunk = serverVersion;
+
+    // Helper: convert a server point to a viz node, reusing existing position
+    // objects where possible so references in any open detail panel stay valid.
+    const existPos = new Map(nodes.map(n => [n.id, n]));
+    function chunkPointToNode(p) {
       const ex    = existPos.get(p.id);
       const meta  = p.entity_meta ?? {};
       const entityLabel = meta.title || meta.filename || p.entity_ref || p.entity_type || p.entity_id.slice(0, 8);
-      const lbl   = `${entityLabel} §${(p.seq ?? 0) + 1}`;
+      const lbl   = `${entityLabel} \u00a7${(p.seq ?? 0) + 1}`;
       const hue   = parseInt(p.entity_id.replace(/-/g, '').slice(0, 4), 16) / 65535;
       const color = new THREE.Color().setHSL(hue, 0.55, 0.45);
-      // Projection coords are authoritative — always update x/y/z from server
-      const pos = { x: p.x, y: p.y, z: p.z };
       const fields = {
         entityId: p.entity_id, entityType: p.entity_type, entityRef: p.entity_ref ?? null,
-        entityMeta: meta, seq: p.seq, label: lbl, summary: p.summary ?? '', _color: color, ...pos,
+        entityMeta: meta, seq: p.seq, label: lbl, summary: p.summary ?? '', _color: color,
+        x: p.x, y: p.y, z: p.z,
       };
-      if (ex) return Object.assign(ex, fields);
-      return { id: p.id, ...fields };
-    });
+      return ex ? Object.assign(ex, fields) : { id: p.id, ...fields };
+    }
+
+    // Render first page immediately so the user sees nodes appearing.
+    nodes = firstPage.data.points.map(chunkPointToNode);
+    links = [];
+    buildScene();
+
+    // Fetch remaining pages sequentially, rendering after each.
+    if (firstPage.data.has_more) {
+      let offset = PROJ_PAGE_SIZE;
+      while (offset < total) {
+        if (loadId !== _loadId) return;
+        const res  = await fetch(`/chunks/projection?offset=${offset}&limit=${PROJ_PAGE_SIZE}`);
+        const page = await res.json();
+        if (!page.ok) break;
+        for (const p of page.data.points) nodes.push(chunkPointToNode(p));
+        buildScene();
+        if (!page.data.has_more) break;
+        offset += PROJ_PAGE_SIZE;
+      }
+    }
+
+    if (loadId !== _loadId) return;
+
+    // All nodes are loaded — now fetch relations and build the link graph.
+    const relRes  = await fetch('/relations?source_kind=chunk&limit=20000');
+    const relData = await relRes.json();
+    if (loadId !== _loadId) return;
 
     const nodeIds = new Set(nodes.map(n => n.id));
     const nodeIdx = new Map(nodes.map((n, i) => [n.id, i]));
-    allRelations  = relationsData.data?.relations ?? [];
+    allRelations  = relData.data?.relations ?? [];
     links = allRelations
       .filter(r => nodeIds.has(r.source_id) && nodeIds.has(r.target_id))
       .map(r => ({
@@ -469,54 +659,105 @@ async function refreshChunks() {
         _tgt: nodes[nodeIdx.get(r.target_id)],
       }));
 
+    // ── Synthetic intra-entity "same document" links ──────────────────────
+    const entityChunks = new Map();
+    for (const n of nodes) {
+      const eid = n.entityId;
+      if (!eid) continue;
+      if (!entityChunks.has(eid)) entityChunks.set(eid, []);
+      entityChunks.get(eid).push(n);
+    }
+    for (const chunks of entityChunks.values()) {
+      if (chunks.length < 2) continue;
+      chunks.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+      const hub = chunks[0];
+      for (let i = 1; i < chunks.length; i++) {
+        links.push({
+          source: hub.id, target: chunks[i].id,
+          origin: 'same_entity', weight: 0.5, confidence: 1.0,
+          _src: hub, _tgt: chunks[i],
+        });
+      }
+    }
+
     buildScene();
     renderHistogram(allRelations);
   } catch (err) {
     console.warn('viz chunk refresh error:', err);
   } finally {
-    setLoading(false);
+    if (loadId === _loadId) setLoading(false);
   }
 }
 
-// ── refresh ───────────────────────────────────────────────────────────────────
+// ── refresh (entity mode) ─────────────────────────────────────────────────────
+// Same incremental paging strategy as refreshChunks. Since there are far fewer
+// entities than chunks, relations are fetched in parallel with the first page.
 async function refresh() {
   if (resolution === 'chunk') { await refreshChunks(); return; }
+  const loadId = ++_loadId;
   setLoading(true);
   try {
-    const [statusRes, projRes, relationsRes, jobsRes] = await Promise.all([
+    // Relations are bounded (~2000) so fetch in parallel with first page.
+    const [statusRes, firstPageRes, relationsRes, jobsRes] = await Promise.all([
       fetch('/status'),
-      fetch('/entities/projection'),
-      fetch('/relations?limit=500&min_confidence=0.4'),
+      fetch(`/entities/projection?offset=0&limit=${PROJ_PAGE_SIZE}`),
+      fetch('/relations?source_kind=entity&limit=2000'),
       fetch('/jobs?limit=30'),
     ]);
-    const status    = await statusRes.json();
-    const projData  = await projRes.json();
-    const relations = await relationsRes.json();
-    const jobs      = await jobsRes.json();
+    if (loadId !== _loadId) return;
+
+    const [status, firstPage, relations, jobs] = await Promise.all([
+      statusRes.json(), firstPageRes.json(), relationsRes.json(), jobsRes.json(),
+    ]);
 
     document.getElementById('s-entities').textContent  = status.data?.entity_count   ?? '?';
     document.getElementById('s-chunks').textContent    = status.data?.chunk_count    ?? '?';
     document.getElementById('s-relations').textContent = status.data?.relation_count ?? '?';
     document.getElementById('s-queue').textContent     = status.data?.queue_depth    ?? '?';
-
     renderJobs(jobs.data?.jobs ?? []);
 
-    const points   = projData.data?.points ?? [];
+    if (!firstPage.ok) return;
+    const serverVersion = firstPage.data.version;
+    const total         = firstPage.data.total;
+
+    if (serverVersion === projVersion.entity && nodes.length === total) return;
+    projVersion.entity = serverVersion;
+
     const existPos = new Map(nodes.map(n => [n.id, n]));
-    nodes = points.map(p => {
+    function entityPointToNode(p) {
       const ex   = existPos.get(p.id);
       const meta = p.meta ?? {};
       const lbl  = meta.title || meta.filename
         || (p.ref ? p.ref.split('/').pop()?.split('?')[0] : null)
         || (p.summary || p.type || p.id).slice(0, 60);
       const color = typeColor(p.type);
-      const pos  = { x: p.x, y: p.y, z: p.z };
       const fields = {
         type: p.type, status: p.status, ref: p.ref ?? null,
-        meta, label: lbl, summary: p.summary ?? '', _color: color, ...pos,
+        meta, label: lbl, summary: p.summary ?? '', _color: color,
+        x: p.x, y: p.y, z: p.z,
       };
       return ex ? Object.assign(ex, fields) : { id: p.id, ...fields };
-    });
+    }
+
+    nodes = firstPage.data.points.map(entityPointToNode);
+    links = [];
+    buildScene();
+
+    if (firstPage.data.has_more) {
+      let offset = PROJ_PAGE_SIZE;
+      while (offset < total) {
+        if (loadId !== _loadId) return;
+        const res  = await fetch(`/entities/projection?offset=${offset}&limit=${PROJ_PAGE_SIZE}`);
+        const page = await res.json();
+        if (!page.ok) break;
+        for (const p of page.data.points) nodes.push(entityPointToNode(p));
+        buildScene();
+        if (!page.data.has_more) break;
+        offset += PROJ_PAGE_SIZE;
+      }
+    }
+
+    if (loadId !== _loadId) return;
 
     const nodeIds = new Set(nodes.map(n => n.id));
     const nodeIdx = new Map(nodes.map((n, i) => [n.id, i]));
@@ -535,7 +776,7 @@ async function refresh() {
   } catch (err) {
     console.warn('viz refresh error:', err);
   } finally {
-    setLoading(false);
+    if (loadId === _loadId) setLoading(false);
   }
 }
 
@@ -593,21 +834,26 @@ function renderHistogram(rels) {
 }
 
 // ── Bus subscriptions ─────────────────────────────────────────────────────────
-// Debounce helper: coalesces rapid successive WS events into a single refresh.
+// Debounce helper: always resets the timer so a short delay (e.g. projection_version
+// at 100 ms) can preempt a longer pending delay (e.g. complete at 800 ms).
 function scheduleRefresh(delayMs = 800) {
-  if (_refreshPending) return;
-  _refreshPending = true;
-  setTimeout(() => { _refreshPending = false; refresh(); }, delayMs);
+  clearTimeout(_refreshTimer);
+  _refreshTimer = setTimeout(() => { _refreshTimer = null; refresh(); }, delayMs);
 }
 
 function subscribeTobus() {
   const bus = window.__vkb.bus;
-  bus.subscribe('ws_open',  () => { setWsStatus(true);  pushEvent({ type: 'ws_open' });  scheduleRefresh(200); });
+  bus.subscribe('ws_open',  () => { setWsStatus(true);  pushEvent({ type: 'ws_open' });  refresh(); });
   bus.subscribe('ws_close', () => { setWsStatus(false); pushEvent({ type: 'ws_close' }); });
-  // Projection-relevant events: re-render the graph
-  const REFRESH_TYPES = ['complete', 'stage_change', 'error', 'worker_crash', 'retune_scheduled'];
-  REFRESH_TYPES.forEach(type => bus.subscribe(type, () => scheduleRefresh(800)));
-  // Event log only (no full refresh needed)
+  // Server finished recomputing the projection — do a version-checked incremental load.
+  // This fires 10-30 s after 'complete' once UMAP is done, and preempts any pending timer.
+  bus.subscribe('projection_version', ev => {
+    if (ev.resolution === resolution) scheduleRefresh(100);
+  });
+  // Non-projection events: update status bar / jobs list (refresh is version-aware, returns fast).
+  const STATUS_TYPES = ['complete', 'stage_change', 'error', 'worker_crash', 'retune_scheduled'];
+  STATUS_TYPES.forEach(type => bus.subscribe(type, () => scheduleRefresh(800)));
+  // Event log only
   ['complete','stage_change','error','worker_crash','retune_scheduled','progress'].forEach(type => {
     bus.subscribe(type, ev => pushEvent(ev));
   });
@@ -622,6 +868,129 @@ function setResolution(res) {
   refresh();
 }
 
+// ── Viz lookahead search ──────────────────────────────────────────────────────
+function nodeMatchesQuery(n, q) {
+  const lq = q.toLowerCase();
+  if (n.label?.toLowerCase().includes(lq)) return true;
+  if (n.type?.toLowerCase().includes(lq))  return true;
+  if (n.entityType?.toLowerCase().includes(lq)) return true;
+  // Check tags in meta/entityMeta
+  const meta = n.meta ?? n.entityMeta ?? {};
+  const tags = [].concat(meta.tag ?? [], meta.tags ?? []).filter(Boolean);
+  if (tags.some(t => String(t).toLowerCase().includes(lq))) return true;
+  // Fuzzy summary keyword
+  if (n.summary?.toLowerCase().includes(lq)) return true;
+  return false;
+}
+
+function nodeSearchTags(n) {
+  const meta = n.meta ?? n.entityMeta ?? {};
+  return [].concat(meta.tag ?? [], meta.tags ?? []).filter(t => t && String(t).trim());
+}
+
+function initVizSearch() {
+  const input  = document.getElementById('viz-search');
+  const list   = document.getElementById('viz-search-list');
+  if (!input || !list) return;
+
+  let curIdx = -1;
+  let lastQ  = '';
+
+  function closeList() {
+    list.classList.remove('open');
+    input.setAttribute('aria-expanded', 'false');
+    curIdx = -1;
+  }
+
+  function openList(items) {
+    const { escHtml } = window.__vkb;
+    list.innerHTML = '';
+    if (!items.length) {
+      list.innerHTML = '<div class="search-no-results">No matches</div>';
+      list.classList.add('open');
+      input.setAttribute('aria-expanded', 'true');
+      return;
+    }
+    items.forEach((n, i) => {
+      const div = document.createElement('div');
+      div.className = 'search-opt';
+      div.setAttribute('role', 'option');
+      div.setAttribute('aria-selected', 'false');
+      const typeLabel = escHtml(n.type ?? n.entityType ?? '');
+      const tags = nodeSearchTags(n);
+      const tagHtml = tags.length
+        ? '<div class="search-opt-tags">' + tags.map(t => `<span class="search-opt-tag">${escHtml(String(t))}</span>`).join('') + '</div>'
+        : '';
+      div.innerHTML =
+        `<div class="search-opt-title">${escHtml(n.label ?? n.id)}</div>` +
+        `<div class="search-opt-sub">${typeLabel}${typeLabel && n.summary ? ' · ' : ''}${escHtml((n.summary ?? '').slice(0, 80))}</div>` +
+        tagHtml;
+      div.addEventListener('mousedown', e => {
+        e.preventDefault();
+        selectNode(n);
+        input.value = '';
+        closeList();
+      });
+      list.appendChild(div);
+    });
+    list.classList.add('open');
+    input.setAttribute('aria-expanded', 'true');
+    curIdx = -1;
+  }
+
+  function highlightItem(idx) {
+    const opts = list.querySelectorAll('.search-opt');
+    opts.forEach((el, i) => el.setAttribute('aria-selected', String(i === idx)));
+    curIdx = idx;
+  }
+
+  function selectNode(n) {
+    showDetail(n);
+    openSidebar();
+    // Fly camera to the node
+    orbitInterrupt();
+    const target = new THREE.Vector3(n.x, n.y, n.z);
+    const dir = camera.position.clone().sub(target).normalize();
+    const dist = 120;
+    camera.position.copy(target.clone().add(dir.multiplyScalar(dist)));
+    controls.target.copy(target);
+    controls.update();
+    orbit._center.copy(target);
+    orbit._baseAngle = null;
+  }
+
+  input.addEventListener('input', () => {
+    const q = input.value.trim();
+    lastQ = q;
+    if (!q) { closeList(); return; }
+    const matches = nodes.filter(n => nodeMatchesQuery(n, q)).slice(0, 12);
+    openList(matches);
+  });
+
+  input.addEventListener('keydown', e => {
+    const opts = list.querySelectorAll('.search-opt');
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      highlightItem(Math.min(curIdx + 1, opts.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      highlightItem(Math.max(curIdx - 1, 0));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (curIdx >= 0 && opts[curIdx]) {
+        opts[curIdx].dispatchEvent(new MouseEvent('mousedown'));
+      }
+    } else if (e.key === 'Escape') {
+      closeList();
+      input.blur();
+    }
+  });
+
+  document.addEventListener('click', e => {
+    if (!input.contains(e.target) && !list.contains(e.target)) closeList();
+  });
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 window.__vkb_viz = { init };
 
@@ -629,6 +998,7 @@ function init() {
   document.querySelectorAll('.res-btn').forEach(btn => {
     btn.addEventListener('click', () => setResolution(btn.dataset.res));
   });
+  initVizSearch();
   resize();
   refresh();
   // Fallback poll: only fires when WS is disconnected (every 60 s).
