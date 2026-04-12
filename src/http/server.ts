@@ -60,6 +60,186 @@ export function broadcastEvent(event: object): void {
       ws.send(msg, err => { if (err) clients.delete(ws); });
     }
   }
+  // After a job completes, invalidate projection caches and start background recompute.
+  // The client learns the new version via the 'projection_version' WS event once done.
+  if ((event as { type?: string }).type === 'complete') {
+    _chunkProj.dirty  = true;
+    _entityProj.dirty = true;
+    _ensureChunkProj();
+    _ensureEntityProj();
+  }
+}
+
+// ── Projection cache ──────────────────────────────────────────────────────────
+// UMAP projections are computed once, cached in memory, and served as paginated
+// slices. The cache is invalidated when a job completes. Recomputation happens
+// in the background; a 'projection_version' WS event notifies clients when new
+// data is ready so they can do a versioned incremental page load.
+
+type ChunkProjPoint = {
+  id: string; entity_id: string; seq: number; summary: string | null;
+  entity_type: string; entity_ref: string | null; entity_meta: Record<string, unknown>;
+  x: number; y: number; z: number;
+};
+type EntityProjPoint = {
+  id: string; type: string; status: string; ref: string | null;
+  meta: Record<string, unknown>; summary: string | null;
+  x: number; y: number; z: number;
+};
+
+const _chunkProj = {
+  version: 0,
+  points:  [] as ChunkProjPoint[],
+  dirty:   true,
+  promise: null as Promise<void> | null,
+};
+const _entityProj = {
+  version: 0,
+  points:  [] as EntityProjPoint[],
+  dirty:   true,
+  promise: null as Promise<void> | null,
+};
+
+async function _computeChunkProj(): Promise<void> {
+  _chunkProj.dirty = false; // clear BEFORE compute so new invalidations re-dirty correctly
+  try {
+    const db = getPool();
+    const { rows } = await db.query<{
+      id: string; entity_id: string; seq: number; summary: string | null;
+      entity_type: string; entity_ref: string | null; entity_meta: Record<string, unknown>;
+      embedding: string;
+    }>(
+      `SELECT c.id, c.entity_id, c.seq, c.summary,
+              e.type AS entity_type, e.ref AS entity_ref, e.meta AS entity_meta,
+              c.embedding::text AS embedding
+       FROM chunk c
+       JOIN entity e ON e.id = c.entity_id
+       WHERE c.embedding IS NOT NULL
+       ORDER BY c.entity_id, c.seq
+       LIMIT 20000`,
+    );
+    if (!rows.length) {
+      _chunkProj.points  = [];
+      _chunkProj.version = (_chunkProj.version + 1) >>> 0;
+      broadcastEvent({ type: 'projection_version', resolution: 'chunk', version: _chunkProj.version, total: 0 });
+      return;
+    }
+    const vectors = rows.map(r => JSON.parse(r.embedding as unknown as string) as number[]);
+    const nNeighbors = Math.min(15, vectors.length - 1);
+    const umap = new UMAP({ nComponents: 3, nNeighbors, minDist: 0.1, nEpochs: 200, random: seededRandom(0x564b4221) });
+    const coords = (await umap.fitAsync(vectors)) as number[][];
+    let minV = Infinity, maxV = -Infinity;
+    for (const pt of coords) for (const v of pt) { if (v < minV) minV = v; if (v > maxV) maxV = v; }
+    const range = maxV - minV || 1;
+    const scale = 600 / range;
+    _chunkProj.points = rows.map((r, i) => ({
+      id: r.id, entity_id: r.entity_id, seq: r.seq, summary: r.summary,
+      entity_type: r.entity_type, entity_ref: r.entity_ref, entity_meta: r.entity_meta,
+      x: (coords[i][0] - minV - range / 2) * scale,
+      y: (coords[i][1] - minV - range / 2) * scale,
+      z: (coords[i][2] - minV - range / 2) * scale,
+    }));
+    _chunkProj.version = (_chunkProj.version + 1) >>> 0;
+    broadcastEvent({ type: 'projection_version', resolution: 'chunk', version: _chunkProj.version, total: _chunkProj.points.length });
+  } catch (e) {
+    _chunkProj.dirty = true; // allow retry on next request
+    throw e;
+  }
+}
+
+async function _computeEntityProj(): Promise<void> {
+  _entityProj.dirty = false;
+  try {
+    const db = getPool();
+    const { rows } = await db.query<{
+      entity_id: string; type: string; status: string; ref: string | null;
+      meta: Record<string, unknown>; summary: string | null;
+      embedding: string;
+    }>(
+      `SELECT c.entity_id, e.type, e.status, e.ref, e.meta, e.summary,
+              c.embedding::text AS embedding
+       FROM chunk c
+       JOIN entity e ON e.id = c.entity_id
+       WHERE c.embedding IS NOT NULL
+       ORDER BY c.entity_id`,
+    );
+    if (!rows.length) {
+      _entityProj.points  = [];
+      _entityProj.version = (_entityProj.version + 1) >>> 0;
+      broadcastEvent({ type: 'projection_version', resolution: 'entity', version: _entityProj.version, total: 0 });
+      return;
+    }
+    // Mean-pool chunk embeddings per entity
+    const entityMap = new Map<string, {
+      type: string; status: string; ref: string | null;
+      meta: Record<string, unknown>; summary: string | null;
+      sum: number[]; count: number;
+    }>();
+    for (const r of rows) {
+      const vec = JSON.parse(r.embedding as unknown as string) as number[];
+      const entry = entityMap.get(r.entity_id);
+      if (entry) {
+        for (let i = 0; i < vec.length; i++) entry.sum[i] += vec[i];
+        entry.count++;
+      } else {
+        entityMap.set(r.entity_id, {
+          type: r.type, status: r.status, ref: r.ref,
+          meta: r.meta, summary: r.summary,
+          sum: vec.slice(), count: 1,
+        });
+      }
+    }
+    const entityIds = [...entityMap.keys()];
+    const vectors   = entityIds.map(id => { const e = entityMap.get(id)!; return e.sum.map(v => v / e.count); });
+    const nNeighbors = Math.min(15, vectors.length - 1);
+    const umap = new UMAP({ nComponents: 3, nNeighbors, minDist: 0.1, nEpochs: 200, random: seededRandom(0x564b4221) });
+    const coords = (await umap.fitAsync(vectors)) as number[][];
+    let minV = Infinity, maxV = -Infinity;
+    for (const pt of coords) for (const v of pt) { if (v < minV) minV = v; if (v > maxV) maxV = v; }
+    const range = maxV - minV || 1;
+    const scale = 600 / range;
+    _entityProj.points = entityIds.map((id, i) => {
+      const e = entityMap.get(id)!;
+      return {
+        id, type: e.type, status: e.status, ref: e.ref,
+        meta: e.meta, summary: e.summary,
+        x: (coords[i][0] - minV - range / 2) * scale,
+        y: (coords[i][1] - minV - range / 2) * scale,
+        z: (coords[i][2] - minV - range / 2) * scale,
+      };
+    });
+    _entityProj.version = (_entityProj.version + 1) >>> 0;
+    broadcastEvent({ type: 'projection_version', resolution: 'entity', version: _entityProj.version, total: _entityProj.points.length });
+  } catch (e) {
+    _entityProj.dirty = true;
+    throw e;
+  }
+}
+
+// Start computation if needed; deduplicate concurrent callers onto the same promise.
+// If re-dirtied during computation, automatically queues another recompute after.
+function _ensureChunkProj(): Promise<void> {
+  if (_chunkProj.promise) return _chunkProj.promise;
+  if (!_chunkProj.dirty)  return Promise.resolve();
+  _chunkProj.promise = _computeChunkProj()
+    .catch(e => { log.warn('Chunk projection error:', (e as Error).message); })
+    .finally(() => {
+      _chunkProj.promise = null;
+      if (_chunkProj.dirty) _ensureChunkProj(); // re-dirtied during compute → requeue
+    });
+  return _chunkProj.promise;
+}
+
+function _ensureEntityProj(): Promise<void> {
+  if (_entityProj.promise) return _entityProj.promise;
+  if (!_entityProj.dirty)  return Promise.resolve();
+  _entityProj.promise = _computeEntityProj()
+    .catch(e => { log.warn('Entity projection error:', (e as Error).message); })
+    .finally(() => {
+      _entityProj.promise = null;
+      if (_entityProj.dirty) _ensureEntityProj();
+    });
+  return _entityProj.promise;
 }
 
 export function startObsServer(adapters: Adapters): void {
@@ -148,9 +328,11 @@ export function startObsServer(adapters: Adapters): void {
   // ── Entities ─────────────────────────────────────────────────────────────
   app.get('/entities', auth, async (req, res) => {
     try {
-      const { type, status, source_context, q, limit = '50', offset = '0', from, to } = req.query as Record<string, string>;
+      const { type, status, source_context, q, id, limit = '50', offset = '0', from, to } = req.query as Record<string, string>;
       const params: unknown[] = [];
       const where: string[] = [];
+
+      if (id)             { params.push(id);             where.push(`id = $${params.length}`); }
 
       if (type)           { params.push(type);           where.push(`type = $${params.length}`); }
       if (status)         { params.push(status);         where.push(`status = $${params.length}`); }
@@ -158,8 +340,13 @@ export function startObsServer(adapters: Adapters): void {
       if (from)           { params.push(from);           where.push(`created_at >= $${params.length}`); }
       if (to)             { params.push(to);             where.push(`created_at <= $${params.length}`); }
       if (q) {
+        // Full-text search across summary, plus ilike against type and common meta fields
+        const qLike = `%${q.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
         params.push(q);
-        where.push(`to_tsvector('english', COALESCE(summary,'')) @@ plainto_tsquery('english', $${params.length})`);
+        const ftsCond = `to_tsvector('english', COALESCE(summary,'')) @@ plainto_tsquery('english', $${params.length})`;
+        params.push(qLike);
+        const likeCond = `(type ILIKE $${params.length} OR COALESCE(meta->>'title','') ILIKE $${params.length} OR COALESCE(meta->>'filename','') ILIKE $${params.length} OR COALESCE(meta->>'tag','') ILIKE $${params.length} OR COALESCE(meta->>'tags','') ILIKE $${params.length})`;
+        where.push(`(${ftsCond} OR ${likeCond})`);
       }
 
       const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
@@ -239,85 +426,28 @@ export function startObsServer(adapters: Adapters): void {
     } catch (e) { sendErr(res, e); }
   });
 
-  // ── Entities: UMAP projection ──────────────────────────────────────────────
-  // Mean-pools each entity's chunk embeddings into a single vector, then
-  // projects entity centroid vectors from N-dim → 3-dim via UMAP.
+  // ── Entities: UMAP projection (paginated, cached) ─────────────────────────
+  // Serves slices of the server-side entity projection cache.
+  // First request blocks until the cache is populated; subsequent requests
+  // return cached data immediately while recomputation occurs in background.
   app.get('/entities/projection', auth, async (req, res) => {
+    const off = Math.max(0, parseInt((req.query.offset as string) ?? '0', 10));
+    const lim = Math.min(2000, parseInt((req.query.limit  as string) ?? '1000', 10));
     try {
-      // Fetch all chunk embeddings grouped by entity, plus entity metadata
-      const { rows } = await db.query<{
-        entity_id: string; type: string; status: string; ref: string | null;
-        meta: Record<string, unknown>; summary: string | null;
-        embedding: string;
-      }>(
-        `SELECT c.entity_id, e.type, e.status, e.ref, e.meta, e.summary,
-                c.embedding::text AS embedding
-         FROM chunk c
-         JOIN entity e ON e.id = c.entity_id
-         WHERE c.embedding IS NOT NULL
-         ORDER BY c.entity_id`,
-      );
-
-      if (!rows.length) {
-        res.json({ ok: true, data: { points: [] } });
-        return;
+      if (!_entityProj.points.length && _entityProj.dirty) {
+        await _ensureEntityProj(); // first load: block until ready
+      } else if (_entityProj.dirty) {
+        _ensureEntityProj(); // has stale data: serve immediately, recompute in background
       }
-
-      // Group embeddings by entity and compute centroid (mean pool)
-      const entityMap = new Map<string, {
-        type: string; status: string; ref: string | null;
-        meta: Record<string, unknown>; summary: string | null;
-        sum: number[]; count: number;
-      }>();
-
-      for (const r of rows) {
-        const vec = JSON.parse(r.embedding as unknown as string) as number[];
-        const entry = entityMap.get(r.entity_id);
-        if (entry) {
-          for (let i = 0; i < vec.length; i++) entry.sum[i] += vec[i];
-          entry.count++;
-        } else {
-          entityMap.set(r.entity_id, {
-            type: r.type, status: r.status, ref: r.ref,
-            meta: r.meta, summary: r.summary,
-            sum: vec.slice(), count: 1,
-          });
-        }
-      }
-
-      const entityIds = [...entityMap.keys()];
-      const vectors   = entityIds.map(id => {
-        const e = entityMap.get(id)!;
-        return e.sum.map(v => v / e.count);
-      });
-
-      const nNeighbors = Math.min(15, vectors.length - 1);
-      const umap = new UMAP({ nComponents: 3, nNeighbors, minDist: 0.1, nEpochs: 200, random: seededRandom(0x564b4221) });
-      const embedding3d = await umap.fitAsync(vectors);
-
-      // Normalise to ±300 units
-      const coords = embedding3d as number[][];
-      let minV = Infinity, maxV = -Infinity;
-      for (const pt of coords) for (const v of pt) { if (v < minV) minV = v; if (v > maxV) maxV = v; }
-      const range = maxV - minV || 1;
-      const scale = 600 / range;
-
-      const points = entityIds.map((id, i) => {
-        const e = entityMap.get(id)!;
-        return {
-          id,
-          type:    e.type,
-          status:  e.status,
-          ref:     e.ref,
-          meta:    e.meta,
-          summary: e.summary,
-          x: (coords[i][0] - minV - range / 2) * scale,
-          y: (coords[i][1] - minV - range / 2) * scale,
-          z: (coords[i][2] - minV - range / 2) * scale,
-        };
-      });
-
-      res.json({ ok: true, data: { points } });
+      const slice = _entityProj.points.slice(off, off + lim);
+      res.json({ ok: true, data: {
+        version:   _entityProj.version,
+        total:     _entityProj.points.length,
+        offset:    off,
+        points:    slice,
+        has_more:  off + slice.length < _entityProj.points.length,
+        computing: _entityProj.promise !== null,
+      }});
     } catch (e) { sendErr(res, e); }
   });
 
@@ -414,63 +544,28 @@ export function startObsServer(adapters: Adapters): void {
     } catch (e) { sendErr(res, e, 400); }
   });
 
-  // ── Chunks: UMAP projection ──────────────────────────────────────────────
-  // Returns { id, entity_id, seq, summary, x, y, z } for all embedded chunks.
-  // Embeddings are projected from N-dim → 3-dim via UMAP so spatial proximity
-  // reflects semantic similarity.
+  // ── Chunks: UMAP projection (paginated, cached) ─────────────────────────
+  // Serves slices of the server-side chunk projection cache.
+  // First request blocks until the cache is populated; subsequent requests
+  // return cached data immediately while recomputation occurs in background.
   app.get('/chunks/projection', auth, async (req, res) => {
+    const off = Math.max(0, parseInt((req.query.offset as string) ?? '0', 10));
+    const lim = Math.min(2000, parseInt((req.query.limit  as string) ?? '1000', 10));
     try {
-      const { rows } = await db.query<{
-        id: string; entity_id: string; seq: number; summary: string | null;
-        entity_type: string; entity_ref: string | null; entity_meta: Record<string, unknown>;
-        embedding: string;
-      }>(
-        `SELECT c.id, c.entity_id, c.seq, c.summary,
-                e.type AS entity_type, e.ref AS entity_ref, e.meta AS entity_meta,
-                c.embedding::text AS embedding
-         FROM chunk c
-         JOIN entity e ON e.id = c.entity_id
-         WHERE c.embedding IS NOT NULL
-         ORDER BY c.entity_id, c.seq
-         LIMIT 5000`,
-      );
-
-      if (!rows.length) {
-        res.json({ ok: true, data: { points: [] } });
-        return;
+      if (!_chunkProj.points.length && _chunkProj.dirty) {
+        await _ensureChunkProj(); // first load: block until ready
+      } else if (_chunkProj.dirty) {
+        _ensureChunkProj(); // has stale data: serve immediately, recompute in background
       }
-
-      // Parse pgvector text representation "[0.1,0.2,...]" → number[]
-      const vectors = rows.map(r => {
-        const s = r.embedding as unknown as string;
-        return JSON.parse(s.replace(/^\[/, '[').replace(/\]$/, ']')) as number[];
-      });
-
-      const nNeighbors = Math.min(15, vectors.length - 1);
-      const umap = new UMAP({ nComponents: 3, nNeighbors, minDist: 0.1, nEpochs: 200, random: seededRandom(0x564b4221) });
-      const embedding3d = await umap.fitAsync(vectors);
-
-      // Normalise to roughly ±300 units (same scale as entity view)
-      const coords = embedding3d as number[][];
-      let minV = Infinity, maxV = -Infinity;
-      for (const pt of coords) for (const v of pt) { if (v < minV) minV = v; if (v > maxV) maxV = v; }
-      const range = maxV - minV || 1;
-      const scale = 600 / range;
-
-      const points = rows.map((r, i) => ({
-        id:          r.id,
-        entity_id:   r.entity_id,
-        seq:         r.seq,
-        summary:     r.summary,
-        entity_type: r.entity_type,
-        entity_ref:  r.entity_ref,
-        entity_meta: r.entity_meta,
-        x: (coords[i][0] - minV - range / 2) * scale,
-        y: (coords[i][1] - minV - range / 2) * scale,
-        z: (coords[i][2] - minV - range / 2) * scale,
-      }));
-
-      res.json({ ok: true, data: { points } });
+      const slice = _chunkProj.points.slice(off, off + lim);
+      res.json({ ok: true, data: {
+        version:   _chunkProj.version,
+        total:     _chunkProj.points.length,
+        offset:    off,
+        points:    slice,
+        has_more:  off + slice.length < _chunkProj.points.length,
+        computing: _chunkProj.promise !== null,
+      }});
     } catch (e) { sendErr(res, e); }
   });
 
@@ -542,7 +637,7 @@ export function startObsServer(adapters: Adapters): void {
       if (source_kind)    { params.push(source_kind);         where.push(`source_kind = $${params.length}`); }
 
       const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
-      const lim = Math.min(500, parseInt(limit, 10) || 50);
+      const lim = Math.min(50000, parseInt(limit, 10) || 50);
       const off = Math.max(0,   parseInt(offset, 10) || 0);
 
       const { rows: relations } = await db.query(
