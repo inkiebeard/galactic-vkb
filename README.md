@@ -14,38 +14,52 @@ graph TD
     end
 
     subgraph vkb process
-        MCP[MCP Server\nstdio or HTTP/SSE :3333]
+        MCP[MCP Server\nstdio or HTTP Streamable :3333]
         HTTP[HTTP Server\n:4242]
         COORD[Coordinator\nWorker Pool]
-        PIPE[Ingest / Retune\nPipeline]
+
+        subgraph Workers
+            IW[ingest-worker × N]
+            FW[finetune-worker]
+            RW[retune-worker]
+        end
+
+        subgraph Pipelines
+            IPIPE[Ingest Pipeline]
+            FPIPE[Finetune Pipeline]
+            RPIPE[Retune Pipeline]
+        end
 
         subgraph Adapters
-            FETCH[fetch\nreadability]
+            FETCH[fetch\nreadability / pdf / epub]
             CHUNK[chunk\nsliding-window]
             EMBED[embed\nollama]
             SECT[section\nsimilarity-valley]
             REL[relation\nheuristic + LLM]
             LLM[llm\nollama]
-            RAW[rawstore\nfilesystem]
+            RAW[rawstore\nfilesystem or s3]
         end
     end
 
     subgraph External
         PG[(Postgres\npgvector)]
         OLL[Ollama]
-        FS[Filesystem\nrawstore/]
+        FS[Filesystem / S3\nrawstore/]
     end
 
     A -->|MCP tools| MCP
-    B -->|REST / SSE| HTTP
+    B -->|REST / WebSocket| HTTP
     MCP --> COORD
     HTTP --> COORD
-    COORD --> PIPE
-    PIPE --> FETCH & CHUNK & EMBED & SECT & REL & LLM & RAW
+    COORD --> IW & FW & RW
+    IW --> IPIPE
+    FW --> FPIPE
+    RW --> RPIPE
+    IPIPE & FPIPE & RPIPE --> FETCH & CHUNK & EMBED & SECT & REL & LLM & RAW
     EMBED -->|vectors| OLL
     LLM --> OLL
     RAW --> FS
-    PIPE -->|upsert| PG
+    IPIPE & FPIPE & RPIPE -->|upsert| PG
 ```
 
 ---
@@ -54,36 +68,82 @@ graph TD
 
 ```mermaid
 flowchart TD
-    START([Job queued]) --> P1
+    START([Job queued]) --> DEDUP
 
-    subgraph P1["Phase 1 — Persist (fetching)"]
-        F1{raw_store_key\nalready set?}
-        F1 -- yes --> REUSE[Load entity.md\nfrom rawstore]
-        F1 -- no --> FETCH2[Fetch raw text\nURL → readability\nor staging file]
-        FETCH2 --> WRITE[Write entity.md\nto rawstore]
-        WRITE --> COMMIT[Commit raw_store_key\nto DB ✓ checkpoint]
+    DEDUP{Content hash\nalready known?}
+    DEDUP -- yes, unchanged --> SKIP([Skip — existing entity returned])
+    DEDUP -- no / changed --> FETCH
+
+    subgraph FETCH["fetching — Persist"]
+        FETCH2[Fetch raw text\nURL → readability / PDF / EPUB\nor staging file]
+        FETCH2 --> HASH[Compute SHA-256\ncontent hash]
+        HASH --> WRITE[Write entity.md + chunks.ndjson\nto RawStore]
+        WRITE --> F_COMMIT[Commit raw_store_key\nto DB ✓]
     end
 
-    REUSE & COMMIT --> P2
+    F_COMMIT --> CHUNK_S
 
-    subgraph P2["Phase 2 — Derive"]
-        S2{section_summaries\nalready exist?}
-        S2 -- yes --> RELOAD[Reload chunks +\nsections from DB]
-        S2 -- no --> CHUNK2[Chunk\nsliding-window]
-        CHUNK2 --> EMBED2[Embed\nnomic-embed-text]
-        EMBED2 --> SECT2[Section\nsimilarity-valley]
-        SECT2 --> SECT_COMMIT[Write section_summary\nto DB ✓ checkpoint]
+    subgraph CHUNK_S["chunking"]
+        CHUNK2[Sliding-window chunk\nwrite chunk rows to DB]
     end
 
-    RELOAD & SECT_COMMIT --> P3
+    CHUNK_S --> EMBED_S
 
-    subgraph P3["Phase 3 — Intelligence (summarising)"]
-        SUM_C[Summarise each chunk\nLLM]
-        SUM_S[Summarise each section\nLLM]
-        REL2[Extract relations\nheuristic + LLM]
+    subgraph EMBED_S["embedding"]
+        EMBED2[Embed each chunk\nvia Ollama]
     end
 
-    P3 --> DONE([Entity ready\nstatus = ready])
+    EMBED_S --> SECT_S
+
+    subgraph SECT_S["sectioning"]
+        SECT2[Group chunks into sections\nsimilarity-valley or positional]
+    end
+
+    SECT_S --> SUM_S
+
+    subgraph SUM_S["summarising"]
+        SUM_C[Summarise each chunk — LLM]
+        SUM_SEC[Summarise each section — LLM]
+        SUM_E[Summarise entity — LLM]
+    end
+
+    SUM_S --> LINK_S
+
+    subgraph LINK_S["linking"]
+        REL_H[Heuristic relation extraction]
+        REL_L[LLM relation extraction\noptional]
+    end
+
+    LINK_S --> TAG_S
+
+    subgraph TAG_S["tagging"]
+        TAG[Extract tags from meta\nAssert tag:* relations\nbetween co-tagged entities]
+    end
+
+    TAG_S --> DONE([Entity ready — status = ready])
+```
+
+## Finetune pipeline
+
+The finetune pipeline enriches already-ingested entities without re-chunking or re-embedding. It runs as a separate `finetune-worker` process and is triggered via `vkb_finetune` (MCP) or `POST /finetune` (HTTP).
+
+```mermaid
+flowchart TD
+    START([Finetune job queued]) --> EX
+
+    subgraph EX["extracting"]
+        TOP[Find top-N nearest neighbours\nvia embedding similarity]
+        TOP --> LLM_REL[LLM relation extractor\nupsert content_llm relations]
+    end
+
+    EX --> TAG
+
+    subgraph TAG["tagging"]
+        LLM_TAG[LLM keyword tagger\nmerge tags into meta.tags]
+        LLM_TAG --> TAG_REL[Assert tag:* relations\nbetween co-tagged entities]
+    end
+
+    TAG --> DONE([Finetune complete])
 ```
 
 ---
@@ -135,7 +195,7 @@ The UI is available at **http://localhost:4242/** once running. Navigate between
 
 ## Adding vkb as an MCP server
 
-vkb uses **stdio transport** when `MCP_PORT` is `0`. The MCP server is also accessible over HTTP/SSE when `MCP_PORT` > 0 (default **3333**).
+vkb uses **stdio transport** when `MCP_PORT` is `0`. The MCP server is also accessible over **HTTP Streamable** (MCP 2025-03-26 spec) when `MCP_PORT` > 0 (default **3333**), with session management for multi-client use.
 
 ### Claude Desktop (`claude_desktop_config.json`)
 
@@ -193,23 +253,25 @@ MCP_PORT=0 DATABASE_URL=postgres://vkb:vkb@localhost:5433/vkb \
 
 | Tool | Description |
 |---|---|
-| `vkb_ingest` | Submit text, a URL, or a file path for ingestion |
-| `vkb_job` | Poll a background job by ID |
-| `vkb_query` | Semantic search across all ingested content |
-| `vkb_get` | Fetch an entity or chunk by ID |
-| `vkb_raw` | Read the raw stored text for an entity or chunk |
-| `vkb_relate` | Assert an explicit relation between two entities |
-| `vkb_neighbors` | Retrieve an N-hop relation subgraph from a seed node |
-| `vkb_delete` | Delete an entity and all its data |
-| `vkb_reingest` | Re-run the ingest pipeline for one or all entities that have stored raw content |
-| `vkb_retune` | Trigger a re-embedding / relation refresh sweep |
-| `vkb_status` | Full system snapshot (counts, queue depth, config) |
+| `vkb_ingest` | Submit text, a URL, or a file path for ingestion. Optional `source_context` (`external`\|`conversation`\|`self_authored`) and `meta` object. Inline text is deduplicated by SHA-256 before queuing. |
+| `vkb_ingest_bulk` | Submit up to 200 items in a single call. Each item has the same shape as `vkb_ingest`. Deduplication is applied per-item; unchanged items are returned with `skipped: true`. |
+| `vkb_job` | Poll a background job by ID. Returns `stage`, progress counters, `entity_id`, `kind`, and `error_detail` on failure. |
+| `vkb_query` | Semantic search across all ingested content. Supports `k`, `type`, `threshold` (float 0–1), and `include_sections`. Returns an actionable hint when results are empty. |
+| `vkb_get` | Fetch an entity or chunk by ID (`kind`: `entity`\|`chunk`). Entity responses include chunk IDs, sections, relations, and `tag_context` (co-tagged entities). |
+| `vkb_raw` | Read the raw stored text for an entity or chunk from the RawStore. |
+| `vkb_relate` | Assert an explicit relation between any two entity or chunk IDs. `weight` is auto-computed from cosine similarity if omitted. Asserted relations are never pruned. |
+| `vkb_neighbors` | Retrieve an N-hop relation subgraph from a seed node. |
+| `vkb_delete` | Delete an entity and all its data (chunks, sections, relations, RawStore files). Non-reversible. |
+| `vkb_finetune` | Queue a finetune job: LLM relation extraction + LLM keyword tagging. No re-chunking or re-embedding. Accepts optional `entity_ids` array or `scope` (entity type filter). |
+| `vkb_retune` | Trigger a re-embedding / relation refresh sweep immediately. `force: true` reprocesses all chunks regardless of embed model. |
+| `vkb_status` | Full system snapshot (entity/chunk/relation counts, queue depth, worker state, config). |
+| `vkb_migrate` | Run all pending SQL migrations. Idempotent. |
 
 ### `vkb_relate` — the feedback loop tool
 
 > "The `vkb_relate` tool is underrated. As Claude works with your data and draws connections, you can have it assert new relations back into the graph. Over time Claude becomes a **contributor** to the knowledge base, not just a consumer. That's a genuinely interesting feedback loop."
 
-Every relation asserted via `vkb_relate` is marked `origin: asserted` — it is never pruned by retune sweeps and carries `confidence: 1.0`. This makes Claude's synthesis durable: connections it draws during a session persist and become first-class edges that future queries and `vkb_neighbors` traversals can follow.
+Every relation asserted via `vkb_relate` is marked `origin: asserted` — it is never pruned by retune sweeps and carries `confidence: 1.0`. The optional `weight` parameter (float 0–1) lets you express relative strength; if omitted it is computed automatically from the cosine similarity between the two nodes. This makes Claude's synthesis durable: connections it draws during a session persist and become first-class edges that future queries and `vkb_neighbors` traversals can follow.
 
 Typical pattern:
 ```
@@ -223,6 +285,8 @@ vkb_relate { source_id: "<chunk-A>", target_id: "<chunk-B>",
 # 3. Traverse what's grown
 vkb_neighbors { id: "<chunk-A>", hops: 2 }
 ```
+
+You can also use `vkb_finetune` to have the LLM automatically extract relations and keyword tags across a set of entities — a useful complement to explicit `vkb_relate` calls when working with a large corpus.
 
 ### `vkb_neighbors` — N-hop subgraph retrieval
 
@@ -278,7 +342,7 @@ curl -X POST http://localhost:4242/ingest \
   -H "Content-Type: application/json" \
   -d '{ "type": "url", "ref": "https://example.com/article" }'
 
-# Local file
+# Local file (supports .md, .txt, .pdf, .epub, .yaml, .json)
 curl -X POST http://localhost:4242/ingest \
   -H "Content-Type: application/json" \
   -d '{ "type": "doc", "ref": "/absolute/path/to/file.md" }'
@@ -286,7 +350,7 @@ curl -X POST http://localhost:4242/ingest \
 # Inline text
 curl -X POST http://localhost:4242/ingest \
   -H "Content-Type: application/json" \
-  -d '{ "type": "note", "text": "Some text…", "meta": { "tags": ["example"] } }'
+  -d '{ "type": "note", "text": "Some text…", "source_context": "conversation", "meta": { "tags": ["example"] } }'
 ```
 
 Response:
@@ -295,7 +359,7 @@ Response:
 { "ok": true, "data": { "job_id": "3f2a1b4c-…", "entity_id": "9d8e7f6a-…" } }
 ```
 
-Ingestion is **asynchronous** — poll `/jobs` for completion (see below).
+Ingestion is **asynchronous** — poll `/jobs` for completion. Inline text is deduplicated by SHA-256 content hash; if identical content already exists as a `ready` entity, the job is skipped and the existing entity is returned.
 
 ### Re-ingest
 
@@ -311,12 +375,28 @@ curl -X POST http://localhost:4242/reingest \
   -d '{}'
 ```
 
+### Finetune
+
+Runs LLM relation extraction and keyword tagging on already-ingested entities without re-chunking or re-embedding:
+
+```bash
+# Finetune specific entities
+curl -X POST http://localhost:4242/finetune \
+  -H "Content-Type: application/json" \
+  -d '{ "entity_ids": ["9d8e7f6a-…"] }'
+
+# Finetune all entities of a given type
+curl -X POST http://localhost:4242/finetune \
+  -H "Content-Type: application/json" \
+  -d '{ "scope": "url" }'
+```
+
 ### Query
 
 ```bash
 curl -X POST http://localhost:4242/query \
   -H "Content-Type: application/json" \
-  -d '{ "text": "How does quantum entanglement work?", "k": 5 }'
+  -d '{ "text": "How does quantum entanglement work?", "k": 5, "threshold": 0.7 }'
 ```
 
 ### Retune
@@ -337,18 +417,22 @@ GET /jobs?kind=ingest&stage=queued&limit=50
 
 | Query param | Values | Description |
 |---|---|---|
-| `kind` | `ingest`, `retune` | Filter by job type |
-| `stage` | `queued`, `fetching`, `chunking`, `embedding`, `relating`, `done`, `error` | Filter by stage |
+| `kind` | `ingest`, `retune`, `finetune` | Filter by job type |
+| `stage` | `queued`, `fetching`, `chunking`, `embedding`, `sectioning`, `summarising`, `linking`, `tagging`, `extracting`, `done`, `error` | Filter by stage |
 | `limit` | 1–200 (default 50) | Max results |
+
+Results include the entity `ref` and `meta` for context.
 
 ### Entities
 
 ```
-GET  /entities?type=url&status=ready&q=quantum&from=2025-01-01&limit=50&offset=0
+GET  /entities?type=url&status=ready&source_context=external&q=quantum&id=<uuid>&from=2025-01-01&limit=50&offset=0
 GET  /entities/broken
+GET  /entities/projection?offset=0&limit=500
 GET  /entities/:id
 GET  /entities/:id/raw
 DELETE /entities/:id
+POST /entities/bulk-action
 ```
 
 `/entities/broken` returns non-ready entities annotated with their latest job and a remediation hint:
@@ -356,12 +440,26 @@ DELETE /entities/:id
 - `no_raw` — source content was not persisted; manual intervention needed
 - `stuck` — an active job exists but has not progressed
 
+`/entities/projection` returns a paginated UMAP 3D projection (mean-pooled chunk embeddings per entity), used by the graph view. The projection is cached and recomputed in the background whenever an ingest job completes.
+
+`POST /entities/bulk-action` applies an action to a list of entity IDs:
+
+```json
+{ "ids": ["<uuid>", "…"], "action": "delete" | "reingest" | "reingest_force" | "finetune" }
+```
+
+Returns `{ results, succeeded, failed }`.
+
 ### Chunks
 
 ```
+GET /chunks?entity_id=<uuid>&limit=500&offset=0
+GET /chunks/projection?offset=0&limit=500
 GET /chunks/:id
 GET /chunks/:id/raw
 ```
+
+`/chunks/projection` returns a paginated UMAP 3D projection of individual chunk embeddings (same cache/versioning as entity projection).
 
 ### Relations
 
@@ -371,11 +469,12 @@ GET /relations?origin=heuristic&rel_type=related_to&min_confidence=0.7&limit=50
 
 | Query param | Description |
 |---|---|
-| `origin` | `heuristic`, `semantic`, `llm`, `asserted` |
+| `origin` | `content_heuristic`, `content_llm`, `semantic`, `asserted` |
 | `rel_type` | Relation label string |
 | `min_confidence` | Float 0–1 |
 | `min_weight` | Float |
 | `source_kind` | `entity` or `chunk` |
+| `limit` | 1–50000 (default 50) |
 
 ### Status
 
@@ -383,24 +482,25 @@ GET /relations?origin=heuristic&rel_type=related_to&min_confidence=0.7&limit=50
 GET /status
 ```
 
-Returns entity/chunk/relation counts, queue depths, and active config.
+Returns entity/chunk/relation counts, queue depths, worker state, index status, and active config.
 
 ---
 
 ## WebSocket event stream
 
-Connect to `ws://localhost:4242/stream` (or `wss://` with TLS) to receive live pipeline events.
+Connect to `ws://localhost:4242/stream` (or `wss://` with TLS) to receive live pipeline events. Browsers that cannot send custom headers can authenticate via query param: `?token=<OBS_SECRET>`.
 
-| Event type | Description |
-|---|---|
-| `stage_change` | Job moved to a new pipeline stage |
-| `progress` | Chunk/embed progress within a stage |
-| `complete` | Job finished successfully |
-| `error` | Job failed — payload contains error detail |
-| `heartbeat` | Sent every ~30 s; confirms the coordinator is alive |
-| `db_unavailable` | Postgres connection lost — UI shows an alert banner |
-| `db_available` | Postgres connection restored |
-| `worker_crash` | A worker process exited unexpectedly and is being respawned |
+| Event type | Payload fields | Description |
+|---|---|---|
+| `stage_change` | `job_id`, `stage` | Job moved to a new pipeline stage |
+| `complete` | `job_id` | Job finished successfully |
+| `error` | `job_id`, `payload` | Job failed — payload contains error detail |
+| `heartbeat` | `job_id` (empty), `pid` | Sent every ~10 s per worker; confirms the coordinator is alive |
+| `worker_crash` | `name`, `code`, `signal`, `ts` | A worker process exited unexpectedly and is being respawned |
+| `projection_version` | `resolution` (`chunk`\|`entity`), `version`, `total`, `ts` | UMAP projection recomputed after a job completes |
+| `retune_scheduled` | `ts` | Coordinator queued a periodic retune sweep |
+| `db_unavailable` | `ts` | Postgres connection lost — UI shows an alert banner |
+| `db_available` | `ts` | Postgres connection restored |
 
 ---
 
@@ -465,13 +565,27 @@ All settings are read from environment variables (or a `.env` file). Defaults ar
 | `RELATION_TTL_DAYS` | `30` | Days before unconfirmed relations are pruned |
 | `RELATION_PRUNE_THRESHOLD` | `0.6` | Confidence below which relations are pruned on retune |
 
+### Summarisation
+
+| Variable | Default | Description |
+|---|---|---|
+| `SUMMARY_CONCURRENCY` | `4` | Parallel LLM calls during the summarising stage |
+| `SUMMARY_MAX_INPUT_CHARS` | `12000` | Max characters fed to the entity-level summary prompt (~3 k tokens) |
+
+### Vector index
+
+| Variable | Default | Description |
+|---|---|---|
+| `IVFFLAT_THRESHOLD` | `1000` | Chunk count above which an ivfflat index is created/maintained |
+| `IVFFLAT_LISTS` | `100` | Number of ivfflat lists (tune alongside chunk count) |
+
 ### Workers & jobs
 
 | Variable | Default | Description |
 |---|---|---|
 | `WORKER_CONCURRENCY` | `2` | Number of ingest worker processes |
 | `INGEST_MAX_RETRIES` | `3` | Max times a failed job is re-queued |
-| `RETUNE_INTERVAL_HOURS` | `6` | How often the retune worker runs automatically |
+| `RETUNE_INTERVAL_HOURS` | `6` | How often the retune worker runs automatically (`0` = disabled) |
 | `RETUNE_SUMMARISE` | `false` | Regenerate entity summaries during retune |
 | `JOB_TTL_DAYS` | `7` | Days before completed/failed jobs are expired |
 
