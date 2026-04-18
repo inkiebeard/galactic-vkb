@@ -60,7 +60,16 @@ export const config = {
   LOG_LEVEL: (process.env.LOG_LEVEL ?? 'info') as 'debug' | 'info' | 'warn' | 'error',
 
   // ── Servers ──────────────────────────────────────────────────────────────
+  // MCP_PORT=0 disables the HTTP/HTTPS MCP endpoint.
   MCP_PORT:   parseInt(process.env.MCP_PORT   ?? '3333', 10),
+  // MCP_STDIO controls whether the stdio transport is started.
+  // Defaults to true when MCP_PORT=0 (stdio-only mode), false otherwise.
+  // Set MCP_STDIO=true explicitly to run both stdio + HTTP simultaneously,
+  // which lets Claude connect via stdio while external tools use HTTP.
+  // An empty string is treated as "not set" (auto-detect based on MCP_PORT).
+  MCP_STDIO:  (process.env.MCP_STDIO !== undefined && process.env.MCP_STDIO !== '')
+                ? process.env.MCP_STDIO !== 'false'
+                : parseInt(process.env.MCP_PORT ?? '3333', 10) === 0,
   OBS_PORT:   parseInt(process.env.OBS_PORT   ?? '4242', 10),
   OBS_SECRET: process.env.OBS_SECRET as string | undefined,
   MCP_SECRET: process.env.MCP_SECRET as string | undefined,

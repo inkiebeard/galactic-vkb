@@ -26,7 +26,9 @@ async function main(): Promise<void> {
   // ── MCP transport — connect early so Claude Desktop's `initialize` ────────
   // handshake succeeds immediately. Tool calls are gated by `isReady` inside
   // the server and will return a "not ready" error until DB init completes.
-  if (config.MCP_PORT === 0) {
+  // stdio and HTTP transports are independent — both can run simultaneously
+  // (e.g. Claude connects via stdio while external tools use the HTTP endpoint).
+  if (config.MCP_STDIO) {
     console.error('STEP: startMcpStdio');
     try {
       await startMcpStdio();

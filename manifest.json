@@ -66,7 +66,8 @@
         "CHUNK_SUMMARY_PROMPT_FILE":    "${user:chunk_summary_prompt_file}",
         "SECTION_SUMMARY_PROMPT_FILE":  "${user:section_summary_prompt_file}",
         "RELATION_EXTRACT_PROMPT_FILE": "${user:relation_extract_prompt_file}",
-        "MCP_PORT":   "0",
+        "MCP_PORT":   "${user:mcp_port}",
+        "MCP_STDIO":  "${user:mcp_stdio}",
         "OBS_PORT":   "${user:obs_port}",
         "MCP_SECRET": "${user:mcp_secret}",
         "OBS_SECRET": "${user:obs_secret}",
@@ -345,6 +346,20 @@
       "type": "file",
       "title": "Relation Extraction Prompt File",
       "description": "Path to a custom Handlebars prompt template for LLM relation extraction.",
+      "required": false,
+      "default": ""
+    },
+    "mcp_port": {
+      "type": "string",
+      "title": "MCP HTTP Port",
+      "description": "Port for the MCP HTTP/HTTPS endpoint. Set to 0 to disable the HTTP transport (stdio-only mode).",
+      "required": false,
+      "default": "0"
+    },
+    "mcp_stdio": {
+      "type": "string",
+      "title": "Enable stdio Transport",
+      "description": "Controls whether the MCP stdio transport is started. Leave blank for auto-detect (enabled when MCP HTTP Port is 0). Set to 'true' to run both stdio and HTTP simultaneously, or 'false' to force HTTP-only.",
       "required": false,
       "default": ""
     },
