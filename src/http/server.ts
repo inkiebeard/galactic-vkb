@@ -466,6 +466,41 @@ export function startObsServer(adapters: Adapters): void {
     } catch (e) { sendErr(res, e); }
   });
 
+  app.patch('/entities/:id', auth, async (req, res) => {
+    try {
+      const id = param(req.params.id);
+      const body = (req.body ?? {}) as { title?: unknown; tags?: unknown };
+      const { rows: ent } = await db.query<{ meta: Record<string, unknown> }>('SELECT meta FROM entity WHERE id = $1', [id]);
+      if (!ent[0]) return void res.status(404).json({ ok: false, error: 'Not found' });
+
+      const meta = { ...(ent[0].meta ?? {}) };
+      if (typeof body.title === 'string') {
+        const title = body.title.trim();
+        if (title) meta.title = title; else delete meta.title;
+      }
+
+      if (Array.isArray(body.tags) || typeof body.tags === 'string') {
+        const rawTags = Array.isArray(body.tags)
+          ? body.tags
+          : body.tags.split(',');
+        const tags = [...new Set(rawTags.map(tag => String(tag).trim()).filter(Boolean))];
+        if (tags.length > 0) {
+          meta.tags = tags;
+          delete meta.tag;
+        } else {
+          delete meta.tags;
+          delete meta.tag;
+        }
+      }
+
+      await db.query(
+        `UPDATE entity SET meta = $1, updated_at = NOW() WHERE id = $2`,
+        [JSON.stringify(meta), id],
+      );
+      res.json({ ok: true, data: { id, meta } });
+    } catch (e) { sendErr(res, e, 400); }
+  });
+
   // ── Entity raw ────────────────────────────────────────────────────────────
   app.get('/entities/:id/raw', auth, async (req, res) => {
     try {

@@ -144,6 +144,8 @@ export interface QueryResultItem {
   entity_type: string;
   entity_summary: string;
   similarity: number;
+  rrf_score: number;
+  keyword_match?: boolean;
   section_summary?: string;
   raw_store_key: string;
   relations: RelationRef[];

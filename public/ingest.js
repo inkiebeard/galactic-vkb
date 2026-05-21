@@ -519,7 +519,7 @@ async function submitText() {
   document.getElementById('text-tag').value     = '';
 }
 
-async function submitFiles(fileArr, tag) {
+async function submitFiles(fileArr, tag, title) {
   const filesList  = document.getElementById('files-list');
   const folderList = document.getElementById('folder-list');
   const ctx = getSourceContext();
@@ -527,8 +527,9 @@ async function submitFiles(fileArr, tag) {
     if (f.skipped) continue;
     const meta = { filename: f.name, path: f.path };
     if (tag) meta.tag = tag;
+    if (title) meta.title = title;
     const d = await postIngest({ type: 'doc', text: f.text, source_context: ctx, meta });
-    registerJob(d.job_id, d.entity_id, f.name);
+    registerJob(d.job_id, d.entity_id, title || f.name);
   }
   if (activeTab === 'files') { pendingFiles.length = 0; renderFileList(filesList, pendingFiles); }
   else { pendingFolderFiles.length = 0; renderFileList(folderList, pendingFolderFiles); }
@@ -839,6 +840,47 @@ function statusChip(st) {
   return `<span class="ent-chip st-${st}">${st}</span>`;
 }
 
+function entityTagsToInput(meta) {
+  const raw = [].concat(meta.tag ?? [], meta.tags ?? []).filter(t => t && String(t).trim());
+  return [...new Set(raw.map(t => String(t).trim()))].join(', ');
+}
+
+function parseEntityTagsInput(value) {
+  return [...new Set(value.split(',').map(t => t.trim()).filter(Boolean))];
+}
+
+function showEntityEditModal(currentTitle, currentTags) {
+  return new Promise(resolve => {
+    const modal     = document.getElementById('entity-edit-modal');
+    const titleEl   = document.getElementById('eem-title');
+    const tagsEl    = document.getElementById('eem-tags');
+    const saveBtn   = document.getElementById('eem-save-btn');
+    const cancelBtn = document.getElementById('eem-cancel-btn');
+
+    titleEl.value = currentTitle;
+    tagsEl.value  = currentTags;
+
+    const finish = (result) => {
+      modal.close();
+      saveBtn.removeEventListener('click', onSave);
+      cancelBtn.removeEventListener('click', onCancel);
+      modal.removeEventListener('close', onClose);
+      resolve(result);
+    };
+    const onSave   = () => finish({ title: titleEl.value.trim(), tags: parseEntityTagsInput(tagsEl.value) });
+    const onCancel = () => finish(null);
+    const onClose  = () => finish(null);
+
+    saveBtn.addEventListener('click', onSave);
+    cancelBtn.addEventListener('click', onCancel);
+    modal.addEventListener('close', onClose, { once: true });
+
+    modal.showModal();
+    titleEl.focus();
+    titleEl.select();
+  });
+}
+
 async function loadEntities(offset = 0, pinnedIdOverride = '') {
   const searchEl   = document.getElementById('ent-search');
   const search     = searchEl.value.trim();
@@ -957,6 +999,7 @@ function renderEntTable(entities) {
       <td style="white-space:nowrap;font-size:10px">${created}</td>
       <td>
         <div class="rem-action-cell">
+          <button class="ent-edit-btn" data-id="${e.id}">Edit</button>
           <button class="ent-reingest-btn" data-id="${e.id}">Reingest</button>
           <button class="ent-delete-btn" data-id="${e.id}">Delete</button>
         </div>
@@ -976,6 +1019,12 @@ function renderEntTable(entities) {
     });
   });
 
+  tbody.querySelectorAll('.ent-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const entity = entities.find(e => e.id === btn.dataset.id);
+      if (entity) entEditOne(entity.id, btn, entity.meta ?? {});
+    });
+  });
   tbody.querySelectorAll('.ent-reingest-btn').forEach(btn => {
     btn.addEventListener('click', () => entReingestOne(btn.dataset.id, btn));
   });
@@ -1019,6 +1068,31 @@ async function entReingestOne(entityId, btn) {
   } catch (err) {
     btn.disabled = false; btn.textContent = 'Reingest';
     alert('Reingest failed: ' + err.message);
+  }
+}
+
+async function entEditOne(entityId, btn, meta) {
+  const title = String(meta.title ?? '').trim();
+  const tags  = entityTagsToInput(meta);
+  const result = await showEntityEditModal(title, tags);
+  if (!result) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    const res = await fetch(`/entities/${entityId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: result.title, tags: result.tags }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+    await loadEntities(entOffset);
+  } catch (err) {
+    alert('Save failed: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Edit';
   }
 }
 
@@ -1396,8 +1470,8 @@ function init() {
     try {
       if      (activeTab === 'url')    await submitURL();
       else if (activeTab === 'text')   await submitText();
-      else if (activeTab === 'files')  await submitFiles(pendingFiles,       document.getElementById('files-tag').value.trim());
-      else if (activeTab === 'folder') await submitFiles(pendingFolderFiles, document.getElementById('folder-tag').value.trim());
+      else if (activeTab === 'files')  await submitFiles(pendingFiles,       document.getElementById('files-tag').value.trim(),  document.getElementById('files-title').value.trim());
+      else if (activeTab === 'folder') await submitFiles(pendingFolderFiles, document.getElementById('folder-tag').value.trim(), document.getElementById('folder-title').value.trim());
     } catch (err) {
       console.error(err);
       alert('Submission error: ' + err.message);

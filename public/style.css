@@ -674,6 +674,13 @@
   }
   .ent-reingest-btn:hover:not(:disabled) { background: #1a2a1a; color: var(--teal); border-color: var(--teal-dim); }
   .ent-reingest-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .ent-edit-btn {
+    padding: 3px 10px; border-radius: 3px; font-family: var(--mono); font-size: 9px;
+    cursor: pointer; background: none; border: 0.5px solid var(--line2); color: var(--muted);
+    transition: background 0.1s, color 0.1s;
+  }
+  .ent-edit-btn:hover:not(:disabled) { background: #16162a; color: var(--purple); border-color: #3a346a; }
+  .ent-edit-btn:disabled { opacity: 0.35; cursor: not-allowed; }
   .ent-delete-btn {
     padding: 3px 10px; border-radius: 3px; font-family: var(--mono); font-size: 9px;
     cursor: pointer; background: none; border: 0.5px solid var(--line2); color: var(--muted);
@@ -746,6 +753,25 @@
   #cm-confirm-btn.warning:hover { background: #2a2410; }
   #cm-confirm-btn.info    { border-color: #2a2a5a; color: var(--purple); }
   #cm-confirm-btn.info:hover    { background: #16162a; }
+  #entity-edit-modal {
+    padding: 0; border: none; background: transparent;
+    max-width: 520px; width: 92%;
+    top: 18vh;
+    left: calc(50% - 520px);
+  }
+  #entity-edit-modal::backdrop { background: rgba(0,0,0,0.65); backdrop-filter: blur(2px); }
+  .entity-edit-box { gap: 14px; }
+  .entity-edit-fields { display: grid; gap: 12px; }
+  .entity-edit-fields label {
+    display: block; margin-bottom: 6px; font-size: 9px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--hint);
+  }
+  .entity-edit-fields input {
+    width: 100%; padding: 8px 10px; border-radius: 4px; border: 0.5px solid var(--line2);
+    background: #171613; color: var(--ink); font-family: var(--mono); font-size: 11px;
+    outline: none;
+  }
+  .entity-edit-fields input:focus { border-color: var(--purple); box-shadow: 0 0 0 1px rgba(175,169,236,0.15); }
 
   /* ── Remediation panel ───────────────────────────────────────────────────── */
   #remediation {

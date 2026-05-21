@@ -212,6 +212,10 @@
             <div class="file-list" id="files-list"></div>
             <div class="meta-row">
               <div>
+                <label for="files-title">Title (optional)</label>
+                <input type="text" id="files-title" placeholder="override the ingested title" autocomplete="off">
+              </div>
+              <div>
                 <label for="files-tag">Tag (optional)</label>
                 <input type="text" id="files-tag" placeholder="docs, export…" autocomplete="off">
               </div>
@@ -228,6 +232,10 @@
             </div>
             <div class="file-list" id="folder-list"></div>
             <div class="meta-row">
+              <div>
+                <label for="folder-title">Title (optional)</label>
+                <input type="text" id="folder-title" placeholder="override the ingested title" autocomplete="off">
+              </div>
               <div>
                 <label for="folder-tag">Tag (optional)</label>
                 <input type="text" id="folder-tag" placeholder="project, archive…" autocomplete="off">
@@ -323,6 +331,27 @@
     <div class="cm-actions">
       <button id="cm-cancel-btn">Cancel</button>
       <button id="cm-confirm-btn">Confirm</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="entity-edit-modal">
+  <div class="cm-box entity-edit-box">
+    <div class="cm-title">Edit entity</div>
+    <div class="cm-body">Update the display title and tag list for this entity.</div>
+    <div class="entity-edit-fields">
+      <div>
+        <label for="eem-title">Title</label>
+        <input type="text" id="eem-title" autocomplete="off" spellcheck="false">
+      </div>
+      <div>
+        <label for="eem-tags">Tags</label>
+        <input type="text" id="eem-tags" placeholder="comma-separated tags" autocomplete="off" spellcheck="false">
+      </div>
+    </div>
+    <div class="cm-actions">
+      <button id="eem-cancel-btn">Cancel</button>
+      <button id="eem-save-btn" class="info">Save</button>
     </div>
   </div>
 </dialog>

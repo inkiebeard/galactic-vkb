@@ -252,33 +252,91 @@ export async function handleQuery(payload: QueryPayload, adapters: Adapters) {
   const [queryEmbedding] = await adapters.embed.embed([text]);
   const vec = serializeVector(queryEmbedding);
 
+  // $1=vec, $2=k, $3=fts text; optional $4=type
   let entityFilter = '';
-  const params: unknown[] = [vec, k];
+  const params: unknown[] = [vec, k, text];
   if (type) {
     params.push(type);
     entityFilter = `AND e.type = $${params.length}`;
   }
 
+  // Hybrid vector + full-text search merged via Reciprocal Rank Fusion (RRF).
+  // Both paths scan the same corpus independently; the CTE merges them so that
+  // a chunk matching on both keyword and semantics floats to the top, while a
+  // chunk only matching by name (zero vector similarity) still surfaces.
+  // RRF score = 1/(60 + vec_rank) + 1/(60 + fts_rank); k=60 is the standard
+  // smoothing constant that prevents high-rank outliers from dominating.
+  //
+  // FTS uses ts_rank_cd (cover density) with a minimum score of 0.05 to
+  // suppress incidental mentions — e.g. a chunk about silk fabric that happens
+  // to contain the word "Silk" once will not surface as a keyword match for
+  // the character named Silk.
   const { rows } = await db.query<{
     chunk_id: string; chunk_summary: string | null; similarity: number;
+    rrf_score: number; fts_match: boolean;
     entity_id: string; entity_type: string; entity_summary: string | null;
     raw_store_key: string | null;
     embedding: string | null;
   }>(
-    `SELECT c.id AS chunk_id, c.summary AS chunk_summary,
-            1 - (c.embedding <=> $1::vector) AS similarity,
-            e.id AS entity_id, e.type AS entity_type, e.summary AS entity_summary,
-            c.raw_store_key,
-            c.embedding::text AS embedding
-     FROM chunk c
+    `WITH vec_ranked AS (
+       SELECT c.id AS chunk_id,
+              1 - (c.embedding <=> $1::vector) AS similarity,
+              ROW_NUMBER() OVER (ORDER BY c.embedding <=> $1::vector) AS vec_rank
+       FROM chunk c
+       JOIN entity e ON e.id = c.entity_id
+       WHERE c.embedding IS NOT NULL AND e.status = 'ready' ${entityFilter}
+       ORDER BY c.embedding <=> $1::vector
+       LIMIT $2
+     ),
+     fts_ranked AS (
+       SELECT chunk_id,
+              ROW_NUMBER() OVER (ORDER BY fts_score DESC) AS fts_rank
+       FROM (
+         SELECT c.id AS chunk_id,
+                ts_rank_cd(
+                  to_tsvector('english', COALESCE(c.summary, '')),
+                  websearch_to_tsquery('english', $3)
+                ) AS fts_score
+         FROM chunk c
+         JOIN entity e ON e.id = c.entity_id
+         WHERE to_tsvector('english', COALESCE(c.summary, ''))
+                 @@ websearch_to_tsquery('english', $3)
+           AND e.status = 'ready' ${entityFilter}
+         ORDER BY fts_score DESC
+         LIMIT $2
+       ) sub
+       WHERE fts_score > 0.05
+     ),
+     merged AS (
+       SELECT
+         COALESCE(v.chunk_id, f.chunk_id)                             AS chunk_id,
+         COALESCE(v.similarity, 0)                                    AS similarity,
+         COALESCE(1.0 / (60 + v.vec_rank), 0::float)
+           + COALESCE(1.0 / (60 + f.fts_rank), 0::float)             AS rrf_score,
+         (f.chunk_id IS NOT NULL)                                     AS fts_match
+       FROM vec_ranked v
+       FULL OUTER JOIN fts_ranked f ON f.chunk_id = v.chunk_id
+     )
+     SELECT
+       m.chunk_id, m.similarity, m.rrf_score, m.fts_match,
+       c.summary         AS chunk_summary,
+       c.raw_store_key,
+       c.embedding::text AS embedding,
+       e.id              AS entity_id,
+       e.type            AS entity_type,
+       e.summary         AS entity_summary
+     FROM merged m
+     JOIN chunk c ON c.id = m.chunk_id
      JOIN entity e ON e.id = c.entity_id
-     WHERE c.embedding IS NOT NULL AND e.status = 'ready' ${entityFilter}
-     ORDER BY c.embedding <=> $1::vector
+     ORDER BY m.rrf_score DESC
      LIMIT $2`,
     params,
   );
 
-  const filtered = rows.filter(r => r.similarity >= minSim);
+  // FTS keyword matches bypass the similarity threshold — the model may be
+  // looking up a proper noun it doesn't know semantically. Vector-only hits
+  // still require the configured minimum similarity.
+  const filtered = rows.filter(r => r.fts_match || r.similarity >= minSim);
 
   // Fetch section summaries if requested
   const sectionMap = new Map<string, string>();
@@ -342,6 +400,8 @@ export async function handleQuery(payload: QueryPayload, adapters: Adapters) {
     entity_type:    r.entity_type,
     entity_summary: r.entity_summary ?? '',
     similarity:     r.similarity,
+    rrf_score:      r.rrf_score,
+    keyword_match:  r.fts_match || undefined,
     section_summary: include_sections ? sectionMap.get(r.chunk_id) : undefined,
     raw_store_key:  r.raw_store_key ?? '',
     relations:      relMap.get(r.chunk_id) ?? [],
@@ -364,8 +424,22 @@ export async function handleQuery(payload: QueryPayload, adapters: Adapters) {
     return {
       results,
       hint: nextThreshold !== null
-        ? `No results at threshold=${appliedThreshold.toFixed(2)}. Retry vkb_query with threshold=${nextThreshold} — relevant content may exist at a lower similarity score.`
-        : `No results even at threshold=${appliedThreshold.toFixed(2)}. The knowledge base may not contain content relevant to this query, or embeddings may not be ready yet.`,
+        ? `No results at threshold=${appliedThreshold.toFixed(2)} (vector) or via keyword search. Retry vkb_query with threshold=${nextThreshold} — relevant content may exist at a lower similarity score.`
+        : `No results via vector or keyword search. The knowledge base may not contain content relevant to this query, or embeddings may not be ready yet.`,
+    };
+  }
+
+  // When results are returned but scores are weak, signal the model so it
+  // doesn't loop trying minor query variations. A rank-1 hit in one list only
+  // scores 1/61 ≈ 0.016; rank-1 in both scores ≈ 0.033. Below 0.02 means
+  // all results are low-ranked tail matches in a single path — likely noise.
+  const maxRrf = Math.max(...results.map(r => r.rrf_score));
+  const maxSim = Math.max(...results.map(r => r.similarity));
+  const ftsHits = results.filter(r => r.keyword_match).length;
+  if (maxRrf < 0.02 && maxSim < minSim) {
+    return {
+      results,
+      hint: `Low-confidence results (best rrf_score=${maxRrf.toFixed(4)}, best similarity=${maxSim.toFixed(2)}, keyword_hits=${ftsHits}). These are the closest matches available but may not be directly relevant. Avoid retrying with minor query variations — instead try vkb_get on a promising entity_id, broaden to a descriptive semantic query, or accept that the VKB may not contain specific content on this topic.`,
     };
   }
 
