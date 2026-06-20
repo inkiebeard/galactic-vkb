@@ -13,8 +13,10 @@ export type JobStage =
   | 'queued' | 'fetching' | 'chunking' | 'embedding'
   | 'sectioning' | 'summarising' | 'extracting' | 'done' | 'error'
   // retune sub-stages
-  | 're_weighting' | 'pruning' | 'indexing' | 'cleaning';
-export type JobKind = 'ingest' | 'retune' | 'finetune';
+  | 're_weighting' | 'pruning' | 'indexing' | 'cleaning'
+  // lint sub-stages
+  | 'checking_orphans' | 'checking_faithfulness' | 'checking_contradictions';
+export type JobKind = 'ingest' | 'retune' | 'finetune' | 'lint';
 export type RelationOrigin = 'content_heuristic' | 'content_llm' | 'semantic' | 'asserted';
 export type RelationKind = 'chunk' | 'entity';
 
@@ -89,6 +91,17 @@ export interface JobProgress {
   skipped?: boolean;
   /** Entity ID of the existing entity whose content matched. */
   duplicate_of?: string;
+  // lint-specific progress
+  lint_checks?: Array<'orphan' | 'faithfulness' | 'contradiction'>;
+  lint_entity_ids?: string[];
+  orphans_found?: number;
+  faithfulness_total?: number;
+  faithfulness_done?: number;
+  faithfulness_issues?: number;
+  contradiction_pairs?: number;
+  contradiction_done?: number;
+  contradictions_found?: number;
+  findings_total?: number;
 }
 
 export interface Job {
@@ -110,6 +123,24 @@ export interface ConfigState {
 }
 
 // ── Pipeline payload types ────────────────────────────────────────────────────
+
+export type LintFindingKind = 'orphan' | 'unfaithful_summary' | 'contradiction';
+export type LintFindingSeverity = 'high' | 'medium' | 'low';
+export type LintFindingStatus = 'open' | 'resolved' | 'dismissed';
+
+export interface LintFinding {
+  id: string;
+  kind: LintFindingKind;
+  severity: LintFindingSeverity;
+  entity_id: string | null;
+  related_entity_id: string | null;
+  description: string;
+  detail: Record<string, unknown>;
+  status: LintFindingStatus;
+  job_id: string | null;
+  created_at: Date;
+  resolved_at: Date | null;
+}
 
 export interface IngestPayload {
   type: string;

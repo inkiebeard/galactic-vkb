@@ -7,7 +7,7 @@ import { getPool, serializeVector } from '../db/client.js';
 import type { Adapters } from '../adapters/registry.js';
 import type {
   IngestPayload, QueryPayload, QueryResultItem,
-  RelationRef, RelationKind, RelationOrigin, SourceContext,
+  RelationRef, RelationKind, RelationOrigin, SourceContext, LintFinding,
 } from '../types.js';
 import { createLogger } from '../logger.js';
 import { pMapSettled } from '../util/pmap.js';
@@ -998,3 +998,115 @@ export async function handleIngestOkf(
   };
 }
 
+// ── Lint ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Queue a lint job and (optionally) spawn the lint worker.
+ *
+ * @param checks      Subset of checks to run. Defaults to all three.
+ * @param entityIds   Limit faithfulness + contradiction checks to these entities.
+ */
+export async function handleLint(
+  checks?: Array<'orphan' | 'faithfulness' | 'contradiction'>,
+  entityIds?: string[],
+): Promise<{ job_id: string }> {
+  const db = getPool();
+  const { rows } = await db.query<{ id: string }>(
+    `INSERT INTO job (kind, stage, progress, expires_at)
+     VALUES ('lint', 'queued',
+       $1::jsonb,
+       NOW() + INTERVAL '7 days')
+     RETURNING id`,
+    [
+      JSON.stringify({
+        retry_count: 0,
+        lint_checks: checks ?? null,
+        lint_entity_ids: entityIds ?? null,
+      }),
+    ],
+  );
+  const jobId = rows[0].id;
+
+  // Attempt to wake the lint worker (non-fatal if coordinator is unavailable)
+  try {
+    const { spawnLintWorker } = await import('../coordinator.js');
+    spawnLintWorker();
+  } catch {
+    // Worker pool not running in this process — the lint-worker daemon will
+    // pick up the job on its next poll cycle.
+  }
+
+  return { job_id: jobId };
+}
+
+export interface LintFindingsFilter {
+  kind?: 'orphan' | 'unfaithful_summary' | 'contradiction';
+  severity?: 'high' | 'medium' | 'low';
+  status?: 'open' | 'resolved' | 'dismissed';
+  entity_id?: string;
+  job_id?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * Query stored lint findings. All filter parameters are optional.
+ */
+export async function handleLintFindings(filter: LintFindingsFilter = {}): Promise<{
+  findings: LintFinding[];
+  total: number;
+}> {
+  const db = getPool();
+  const where: string[] = [];
+  const params: unknown[] = [];
+
+  if (filter.kind) {
+    params.push(filter.kind);
+    where.push(`f.kind = $${params.length}`);
+  }
+  if (filter.severity) {
+    params.push(filter.severity);
+    where.push(`f.severity = $${params.length}`);
+  }
+  if (filter.status) {
+    params.push(filter.status);
+    where.push(`f.status = $${params.length}`);
+  } else {
+    // Default to open findings only
+    where.push(`f.status = 'open'`);
+  }
+  if (filter.entity_id) {
+    params.push(filter.entity_id);
+    where.push(`(f.entity_id = $${params.length} OR f.related_entity_id = $${params.length})`);
+  }
+  if (filter.job_id) {
+    params.push(filter.job_id);
+    where.push(`f.job_id = $${params.length}`);
+  }
+
+  const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  const limit  = Math.min(filter.limit  ?? 50, 200);
+  const offset = filter.offset ?? 0;
+
+  const { rows: countRows } = await db.query<{ cnt: string }>(
+    `SELECT COUNT(*) AS cnt FROM lint_finding f ${whereClause}`,
+    params,
+  );
+  const total = parseInt(countRows[0]?.cnt ?? '0', 10);
+
+  params.push(limit, offset);
+  const { rows } = await db.query<LintFinding>(
+    `SELECT f.id, f.kind, f.severity, f.entity_id, f.related_entity_id,
+            f.description, f.detail, f.status, f.job_id, f.created_at, f.resolved_at
+     FROM lint_finding f
+     ${whereClause}
+     ORDER BY
+       CASE f.severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+       f.created_at DESC
+     LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params,
+  );
+
+  return { findings: rows, total };
+}

@@ -26,6 +26,42 @@ Return [] if no meaningful relationships exist. Do not guess or over-relate.`;
 
 const BUILTIN_META_TAG_EXTRACT = `Extract 3-8 concise keyword tags that best represent the main topics, domain, entities, and themes of the following document summary. Return ONLY a JSON array of lowercase short phrases (e.g. ["machine learning", "neural networks", "python"]). Return [] if no meaningful tags can be extracted.`;
 
+
+const BUILTIN_SUMMARY_FAITHFULNESS = `You are a fact-checking assistant. Your task is to identify claims in a generated summary that are NOT supported by or contradict the source content.
+
+Assess faithfulness at three levels:
+- "high":   all claims in the summary are supported by the source content
+- "medium": mostly accurate, but contains minor embellishments or phrasing not explicitly in the source
+- "low":    contains specific factual claims absent from or directly contradicted by the source
+
+Return ONLY valid JSON in this exact shape:
+{
+  "faithfulness": "high" | "medium" | "low",
+  "issues": [
+    { "claim": "<exact claim from summary>", "issue": "unsupported" | "contradicts", "detail": "<brief explanation>" }
+  ]
+}
+
+Return { "faithfulness": "high", "issues": [] } when no issues are found. Do not flag paraphrasing or minor rewording as issues.`;
+
+const BUILTIN_CONTRADICTION_CHECK = `You are a fact-checking assistant comparing two knowledge base entries for factual contradictions.
+
+A contradiction means the two entries make mutually exclusive claims about the same specific fact, concept, metric, date, or event — not merely different perspectives or emphasis.
+
+Return ONLY valid JSON in this exact shape:
+{
+  "contradicts": true | false,
+  "severity": "high" | "medium" | "low",
+  "description": "<concise description of the contradiction, or empty string if none>"
+}
+
+Severity guide:
+- "high":   direct, unambiguous factual contradiction (e.g. opposite boolean claims, incompatible numeric values)
+- "medium": tension or inconsistency that likely reflects an error and needs human review
+- "low":    minor discrepancy that might be due to timing, scope, or framing differences
+
+Set contradicts to false — and description to "" — when entries are merely complementary or discuss the same topic from different angles.`;
+
 function loadOrDefault(filePath: string | undefined, builtin: string): string {
   if (!filePath) return builtin;
   try {
@@ -51,5 +87,11 @@ export const prompts = {
   },
   get metaTagExtract(): string {
     return BUILTIN_META_TAG_EXTRACT;
+  },
+  get summaryFaithfulness(): string {
+    return BUILTIN_SUMMARY_FAITHFULNESS;
+  },
+  get contradictionCheck(): string {
+    return BUILTIN_CONTRADICTION_CHECK;
   },
 };

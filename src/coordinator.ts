@@ -178,6 +178,19 @@ export function spawnFinetuneWorker(): ChildProcess {
   return worker;
 }
 
+export function spawnLintWorker(): ChildProcess {
+  const workerPath = getWorkerPath('lint');
+  const isTs = workerPath.endsWith('.ts');
+  const args = isTs ? ['--import', 'tsx', workerPath] : [workerPath];
+  const worker = spawn(process.execPath, args, {
+    stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+    env: process.env,
+  });
+  attachHandlers(worker, `lint#${worker.pid ?? 'x'}`);
+  log.info(`Spawned lint worker pid=${worker.pid}`);
+  return worker;
+}
+
 // ── Public ────────────────────────────────────────────────────────────────────
 export async function startWorkerPool(): Promise<void> {
   const concurrency = config.WORKER_CONCURRENCY;
@@ -189,6 +202,9 @@ export async function startWorkerPool(): Promise<void> {
 
   // Single finetune worker (LLM-heavy, no benefit from concurrency)
   spawnFinetuneWorker();
+
+  // Single lint worker (LLM-heavy, no benefit from concurrency)
+  spawnLintWorker();
 
   // Periodic heartbeat check
   setInterval(() => { void heartbeatCheck(); }, 30_000);

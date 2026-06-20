@@ -9,7 +9,7 @@ import { UMAP } from 'umap-js';
 import { config } from '../config.js';
 import { getPool, isDbConnectionError } from '../db/client.js';
 import type { Adapters } from '../adapters/registry.js';
-import { handleIngest, handleIngestOkf, handleQuery, handleRetune, handleStatus, handleDelete, handleReingest, handleFinetune } from '../mcp/tools.js';
+import { handleIngest, handleIngestOkf, handleQuery, handleRetune, handleStatus, handleDelete, handleReingest, handleFinetune, handleLint, handleLintFindings } from '../mcp/tools.js';
 import { createLogger } from '../logger.js';
 import { loadTls } from '../tls.js';
 
@@ -763,6 +763,35 @@ export function startObsServer(adapters: Adapters): void {
       res.json({ ok: true, data });
     } catch (e) { sendErr(res, e, 400); }
   });
+
+
+  app.post('/lint', auth, async (req, res) => {
+    try {
+      const { checks, entity_ids } = (req.body ?? {}) as {
+        checks?: Array<'orphan' | 'faithfulness' | 'contradiction'>;
+        entity_ids?: string[];
+      };
+      const data = await handleLint(checks, entity_ids);
+      res.json({ ok: true, data });
+    } catch (e) { sendErr(res, e, 400); }
+  });
+
+  app.get('/lint/findings', auth, async (req, res) => {
+    try {
+      const q = req.query as Record<string, string>;
+      const data = await handleLintFindings({
+        kind:      q.kind      as 'orphan' | 'unfaithful_summary' | 'contradiction' | undefined,
+        severity:  q.severity  as 'high' | 'medium' | 'low' | undefined,
+        status:    q.status    as 'open' | 'resolved' | 'dismissed' | undefined,
+        entity_id: q.entity_id,
+        job_id:    q.job_id,
+        limit:     q.limit  ? parseInt(q.limit,  10) : undefined,
+        offset:    q.offset ? parseInt(q.offset, 10) : undefined,
+      });
+      res.json({ ok: true, data });
+    } catch (e) { sendErr(res, e, 400); }
+  });
+
 
 
   http.listen(config.OBS_PORT, () => {

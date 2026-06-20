@@ -11,7 +11,7 @@ import type { Adapters } from '../adapters/registry.js';
 import {
   handleIngest, handleIngestBulk, handleIngestOkf, handleJob, handleQuery, handleGet, handleRaw,
   handleRelate, handleNeighbors, handleDelete, handleRetune, handleStatus,
-  handleMigrate, handleFinetune,
+  handleMigrate, handleFinetune, handleLint, handleLintFindings,
 } from './tools.js';
 import { createLogger, setMcpLogTarget } from '../logger.js';
 
@@ -220,6 +220,61 @@ function buildMcpServer(): McpServer {
     },
   }, async ({ scope, force }) => wrap('vkb_retune', { scope, force }, () => handleRetune(scope, force)));
 
+
+
+
+  // ── vkb_lint ──────────────────────────────────────────────────────────────
+  server.registerTool('vkb_lint', {
+    description: [
+      'Queue a background lint job that validates the knowledge graph.',
+      'Three checks (run in order): (1) orphan detection — entities with no relations;',
+      '(2) summary faithfulness — LLM compares each entity summary against its raw source',
+      'to flag hallucinated or unsupported claims;',
+      '(3) contradiction detection — LLM checks semantically similar entity pairs for',
+      'factual contradictions and asserts lint:contradicts relations on confirmed conflicts.',
+      'Returns a job_id for polling with vkb_job. Use vkb_lint_findings to query results.',
+    ].join(' '),
+    inputSchema: {
+      checks: z.array(z.enum(['orphan', 'faithfulness', 'contradiction']))
+        .optional()
+        .describe('Subset of checks to run. Defaults to all three.'),
+      entity_ids: z.array(z.string().uuid())
+        .optional()
+        .describe('Limit faithfulness and contradiction checks to these entity IDs. Orphan check always runs on all entities.'),
+    },
+  }, async ({ checks, entity_ids }) =>
+    wrap('vkb_lint', { checks, entity_ids }, () => handleLint(checks, entity_ids)));
+
+  // ── vkb_lint_findings ─────────────────────────────────────────────────────
+  server.registerTool('vkb_lint_findings', {
+    description: [
+      'Query stored lint findings. Defaults to open findings ordered by severity.',
+      'Use status="resolved" or status="dismissed" to see triaged items.',
+    ].join(' '),
+    inputSchema: {
+      kind: z.enum(['orphan', 'unfaithful_summary', 'contradiction'])
+        .optional()
+        .describe('Filter by finding kind.'),
+      severity: z.enum(['high', 'medium', 'low'])
+        .optional()
+        .describe('Filter by severity.'),
+      status: z.enum(['open', 'resolved', 'dismissed'])
+        .optional()
+        .describe('Filter by status. Defaults to "open".'),
+      entity_id: z.string().uuid()
+        .optional()
+        .describe('Return findings involving this entity (as primary or related entity).'),
+      job_id: z.string().uuid()
+        .optional()
+        .describe('Return findings produced by a specific lint job.'),
+      limit: z.number().int().min(1).max(200).optional()
+        .describe('Max findings to return (default 50, max 200).'),
+      offset: z.number().int().min(0).optional()
+        .describe('Pagination offset.'),
+    },
+  }, async ({ kind, severity, status, entity_id, job_id, limit, offset }) =>
+    wrap('vkb_lint_findings', { kind, severity, status },
+      () => handleLintFindings({ kind, severity, status, entity_id, job_id, limit, offset })));
 
   // ── vkb_status ────────────────────────────────────────────────────────────
   server.registerTool('vkb_status', {
