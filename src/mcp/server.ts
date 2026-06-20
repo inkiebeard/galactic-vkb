@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { config } from '../config.js';
 import type { Adapters } from '../adapters/registry.js';
 import {
-  handleIngest, handleIngestBulk, handleJob, handleQuery, handleGet, handleRaw,
+  handleIngest, handleIngestBulk, handleIngestOkf, handleJob, handleQuery, handleGet, handleRaw,
   handleRelate, handleNeighbors, handleDelete, handleRetune, handleStatus,
   handleMigrate, handleFinetune,
 } from './tools.js';
@@ -97,6 +97,28 @@ function buildMcpServer(): McpServer {
       })).min(1).max(200).describe('Array of ingest payloads (max 200 per call)'),
     },
   }, async ({ items }) => wrap('vkb_ingest_bulk', { count: items.length }, () => handleIngestBulk(items)));
+
+
+  // ── vkb_ingest_okf ───────────────────────────────────────────────────────
+  server.registerTool('vkb_ingest_okf', {
+    description: [
+      'Ingest an OKF (Open Knowledge Format) bundle directory into vkb.',
+      'Walks all .md files in the bundle, parses OKF frontmatter (type, title, description, resource, tags, timestamp),',
+      'bulk-ingests every concept document, then asserts all OKF cross-links as permanent asserted relations.',
+      'Cross-link relation types are derived from the nearest section heading (e.g. a link under "# Joins" -> "okf:joins").',
+      'Re-ingesting the same bundle is safe: unchanged files are deduplicated by content hash.',
+    ].join(' '),
+    inputSchema: {
+      bundle_path: z.string().describe(
+        'Absolute or CWD-relative path to the OKF bundle root directory.',
+      ),
+      source_context: z.enum(['external', 'conversation', 'self_authored']).optional().describe(
+        'Provenance applied to all ingested documents. Defaults to "external".',
+      ),
+    },
+  }, async ({ bundle_path, source_context }) =>
+    wrap('vkb_ingest_okf', { bundle_path }, () => handleIngestOkf(bundle_path, source_context)),
+  );
 
   // ── vkb_job ───────────────────────────────────────────────────────────────
   server.registerTool('vkb_job', {
@@ -197,6 +219,7 @@ function buildMcpServer(): McpServer {
       force: z.boolean().optional().describe('Re-process all records, ignoring incremental cursor'),
     },
   }, async ({ scope, force }) => wrap('vkb_retune', { scope, force }, () => handleRetune(scope, force)));
+
 
   // ── vkb_status ────────────────────────────────────────────────────────────
   server.registerTool('vkb_status', {

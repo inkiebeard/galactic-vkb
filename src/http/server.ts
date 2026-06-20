@@ -9,7 +9,7 @@ import { UMAP } from 'umap-js';
 import { config } from '../config.js';
 import { getPool, isDbConnectionError } from '../db/client.js';
 import type { Adapters } from '../adapters/registry.js';
-import { handleIngest, handleQuery, handleRetune, handleStatus, handleDelete, handleReingest, handleFinetune } from '../mcp/tools.js';
+import { handleIngest, handleIngestOkf, handleQuery, handleRetune, handleStatus, handleDelete, handleReingest, handleFinetune } from '../mcp/tools.js';
 import { createLogger } from '../logger.js';
 import { loadTls } from '../tls.js';
 
@@ -715,6 +715,25 @@ export function startObsServer(adapters: Adapters): void {
     } catch (e) { sendErr(res, e, 400); }
   });
 
+
+  // POST /ingest/okf — ingest an OKF bundle directory
+  // Body: { bundle_path: string, source_context?: "external"|"conversation"|"self_authored" }
+  app.post('/ingest/okf', auth, async (req, res) => {
+    try {
+      if (!req.body || typeof req.body !== 'object') {
+        res.status(400).json({ ok: false, error: 'Request body is missing — ensure Content-Type is application/json' });
+        return;
+      }
+      const { bundle_path, source_context } = req.body as { bundle_path?: string; source_context?: string };
+      if (!bundle_path || typeof bundle_path !== 'string') {
+        res.status(400).json({ ok: false, error: '"bundle_path" (string) is required' });
+        return;
+      }
+      const data = await handleIngestOkf(bundle_path, source_context as any);
+      res.json({ ok: true, data });
+    } catch (e) { sendErr(res, e, 400); }
+  });
+
   app.post('/query', auth, async (req, res) => {
     try {
       const data = await handleQuery(req.body, adapters);
@@ -744,6 +763,7 @@ export function startObsServer(adapters: Adapters): void {
       res.json({ ok: true, data });
     } catch (e) { sendErr(res, e, 400); }
   });
+
 
   http.listen(config.OBS_PORT, () => {
     log.info(`${scheme.toUpperCase()} + WebSocket listening on :${config.OBS_PORT}`);

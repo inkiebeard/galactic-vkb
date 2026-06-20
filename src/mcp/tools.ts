@@ -7,10 +7,11 @@ import { getPool, serializeVector } from '../db/client.js';
 import type { Adapters } from '../adapters/registry.js';
 import type {
   IngestPayload, QueryPayload, QueryResultItem,
-  RelationRef, RelationKind, RelationOrigin,
+  RelationRef, RelationKind, RelationOrigin, SourceContext,
 } from '../types.js';
 import { createLogger } from '../logger.js';
 import { pMapSettled } from '../util/pmap.js';
+import { parseOkfBundle, okfRelType, normaliseTags } from '../adapters/okf.js';
 
 const log = createLogger('query');
 
@@ -886,3 +887,114 @@ function cosineSim(a: number[], b: number[]): number {
   if (na === 0 || nb === 0) return 0;
   return dot / (Math.sqrt(na) * Math.sqrt(nb));
 }
+
+// ── Tool: vkb_ingest_okf ─────────────────────────────────────────────────────
+
+export interface OkfIngestResult {
+  bundle_path: string;
+  queued: number;
+  skipped: number;
+  failed: number;
+  relations_asserted: number;
+  documents: Array<{
+    bundle_doc_path: string;
+    entity_id: string;
+    job_id: string | null;
+    skipped?: boolean;
+    error?: string;
+  }>;
+}
+
+/**
+ * Ingest an OKF bundle directory into vkb.
+ *
+ * Steps:
+ *   1. Parse the bundle: walk all .md files, extract frontmatter and cross-links.
+ *   2. Bulk-ingest all concept documents (dedup by file path / content hash).
+ *   3. Assert OKF cross-links as `origin: asserted` relations (confidence 1.0,
+ *      never pruned). The relation type is derived from the nearest section
+ *      heading in the source document (e.g. a link under "# Joins" -> "okf:joins").
+ *
+ * @param bundlePath     Absolute or CWD-relative path to the OKF bundle root.
+ * @param sourceContext  Provenance context applied to all ingested documents
+ *                       (defaults to "external").
+ */
+export async function handleIngestOkf(
+  bundlePath: string,
+  sourceContext?: SourceContext,
+): Promise<OkfIngestResult> {
+  const absBundle = resolvePath(bundlePath);
+
+  // 1. Parse bundle
+  const docs = await parseOkfBundle(absBundle);
+
+  // 2. Build ingest payloads
+  // Use the absolute file path as `ref` so the pipeline can:
+  //   (a) detect prior versions on re-ingest (file-path dedup)
+  //   (b) compute a content hash for unchanged-file short-circuit
+  const payloads: IngestPayload[] = docs.map(doc => {
+    const fm = doc.frontmatter;
+    const tags = normaliseTags(fm.tags);
+    const meta: Record<string, unknown> = {
+      ...fm,
+      tags,
+      okf_path:   doc.bundlePath,
+      okf_bundle: absBundle,
+    };
+    return {
+      type:           fm.type ?? 'okf_document',
+      ref:            doc.filePath,
+      source_context: sourceContext ?? 'external',
+      meta,
+    } satisfies IngestPayload;
+  });
+
+  // 3. Bulk ingest
+  const bulk = await handleIngestBulk(payloads);
+
+  // Build bundlePath -> entity_id map
+  const pathToEntityId = new Map<string, string>();
+  for (let i = 0; i < bulk.results.length; i++) {
+    const r = bulk.results[i];
+    if (r.entity_id) pathToEntityId.set(docs[i].bundlePath, r.entity_id);
+  }
+
+  // 4. Assert OKF cross-link relations
+  // Cross-links are explicit human-authored relationship declarations.
+  // Map them to `origin: asserted` vkb relations (confidence 1.0, never pruned).
+  let relationsAsserted = 0;
+  for (let i = 0; i < docs.length; i++) {
+    const sourceEntityId = pathToEntityId.get(docs[i].bundlePath);
+    if (!sourceEntityId) continue;
+    for (const link of docs[i].links) {
+      const targetEntityId = pathToEntityId.get(link.targetBundlePath);
+      if (!targetEntityId || targetEntityId === sourceEntityId) continue;
+      const relType = okfRelType(link);
+      try {
+        await handleRelate(sourceEntityId, targetEntityId, relType, 1.0);
+        relationsAsserted++;
+      } catch {
+        // Non-fatal: skip if target entity failed to ingest
+      }
+    }
+  }
+
+  // 5. Shape response
+  const documents = bulk.results.map((r, i) => ({
+    bundle_doc_path: docs[i]?.bundlePath ?? '',
+    entity_id:       r.entity_id,
+    job_id:          r.job_id,
+    skipped:         r.skipped,
+    error:           r.error,
+  }));
+
+  return {
+    bundle_path:        absBundle,
+    queued:             bulk.queued,
+    skipped:            bulk.skipped,
+    failed:             bulk.failed,
+    relations_asserted: relationsAsserted,
+    documents,
+  };
+}
+
