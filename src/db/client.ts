@@ -77,6 +77,15 @@ export function isDbConnectionError(err: unknown): boolean {
   return false;
 }
 
+
+/**
+ * Replace the module-level pool with the given instance.
+ * Intended for integration tests that need to connect to a test database.
+ * The caller is responsible for ending the pool when done.
+ */
+export function forcePool(pool: Pool): void {
+  _pool = pool;
+}
 export async function closePool(): Promise<void> {
   if (_pool) {
     await _pool.end();

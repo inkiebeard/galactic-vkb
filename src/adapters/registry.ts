@@ -61,3 +61,8 @@ export function getAdapters(): Adapters {
 export function resetAdapters(): void {
   _adapters = null;
 }
+
+/** Inject a custom Adapters instance (for integration tests). */
+export function setAdapters(adapters: Adapters): void {
+  _adapters = adapters;
+}

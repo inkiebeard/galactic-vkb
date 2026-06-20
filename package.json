@@ -1,7 +1,7 @@
 {
   "name": "vkb",
   "version": "0.1.0",
-  "description": "Vector Knowledge Base — self-contained, local-first semantic memory system",
+  "description": "Vector Knowledge Base \u2014 self-contained, local-first semantic memory system",
   "type": "module",
   "main": "dist/index.js",
   "engines": {
@@ -15,7 +15,11 @@
     "migrate": "tsx src/db/migrate.ts",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
-    "db:reset": "docker compose down -v && docker compose up -d postgres"
+    "db:reset": "docker compose down -v && docker compose up -d postgres",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -40,6 +44,7 @@
     "@types/pg": "^8.20.0",
     "@types/ws": "^8.18.1",
     "tsx": "^4.21.0",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.9"
   }
 }
